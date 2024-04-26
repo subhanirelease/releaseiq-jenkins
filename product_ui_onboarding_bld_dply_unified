@@ -1,0 +1,140 @@
+ //Create repo files job should create new customer branch from master make changes and save in customer name branch
+ // Input for this job product_ui_onboarding_bld_dply_unified should be customer name branch
+ // Devops branch in this job product_ui_onboarding_bld_dply_unified should be customer name branch
+ pipeline {
+    
+    environment {
+        //EMAIL_TO = 'platform-team@releaseiq.io,devops-team@releaseiq.io,product-team@releaseiq.io'
+        EMAIL_TO = 'prabhu.k@releaseiq.io'
+        VARS_DIR='build/product-ui'
+        VARS_FILE='ui-variables'
+        BUCKET="s3://riq-staging/customer_onboarding"
+        ONBOARDING="onboarding"
+        RESOURCE="resource.txt"
+        PUIMODULE='src/constants'
+        PUIFILE='config.js'
+    }
+    
+   agent {
+       kubernetes {
+      //cloud 'kubernetes'
+      yaml """
+kind: Pod
+metadata:
+  name: kaniko
+spec:
+  containers:
+  - name: nodejs
+    image: docker.io/timbru31/java-node:latest
+    imagePullPolicy: IfNotPresent
+    command:
+    -  cat
+    tty: true
+  - name: awscli
+    image: docker.io/mesosphere/aws-cli:latest
+    imagePullPolicy: IfNotPresent
+    command:
+    -  cat
+    tty: true
+  volumes:
+    - name: docker-config
+      configMap:
+        name: docker-config
+"""
+  }
+   }
+   
+   stages {
+        stage('Checkout') {
+         steps {
+         // add Jenkins build name setter
+            buildName "${ENV_NAME}-${TAG}-bld-dply"
+            checkout([$class: 'GitSCM', branches: [[name: '*/$BRANCH_NAME']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/product-ui.git']]])
+            sh 'cat $PUIMODULE/$PUIFILE'
+    }
+}
+      
+      stage('Compile dev and s3 copy') {
+         steps {
+             container(name: 'nodejs'){
+                script{
+                    env.REACT_APP_STAGE = env.NAMESPACE
+                    println REACT_APP_STAGE
+                    sh './gradlew build'
+                }
+            }
+         }
+      }
+
+       stage("publish to S3") {
+          steps {
+              sh 'mkdir deploy'
+            checkout([$class: 'GitSCM', branches: [[name: '*/$BRANCH_NAME']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'RelativeTargetDirectory', relativeTargetDir: 'deploy']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/riq-jenkins-pipeline-jobs.git']]])
+            sh 'ls -l build deploy'
+              container(name: 'awscli'){
+            withAWS(region:'us-east-1',credentials:'aws') {
+                      sh '''
+                            pwd
+                            ls -l deploy/$VARS_DIR/$VARS_FILE
+                            chmod +x deploy/$VARS_DIR/$VARS_FILE
+                            . deploy/$VARS_DIR/$VARS_FILE
+                            eval CUSTOMER_S3_DESTINATION=$`echo $NAMESPACE|sed "s/-/_/g"`
+                            eval CUSTOMER_CDN=$`echo ${NAMESPACE}_CDN|sed "s/-/_/g"`
+                            RIQ_STAGING=s3://riq-staging/product-"${NAMESPACE}"
+                            echo Deploying to $NAMESPACE env
+                              
+                            echo 'List before deploy'
+                            echo '=================='
+                            aws s3 ls $CUSTOMER_S3_DESTINATION/
+                              
+                            echo "Copy files to destination bucket $CUSTOMER_S3_DESTINATION"
+                            aws s3 cp  $WORKSPACE/build/ $CUSTOMER_S3_DESTINATION/ --recursive --include "*/*"
+                              
+                            echo 'List after deploy'
+                            echo '=================='
+                            aws s3 ls $CUSTOMER_S3_DESTINATION/
+                              
+                            echo clearing cache in $NAMESPACE
+                            aws cloudfront create-invalidation --distribution-id "${CUSTOMER_CDN}" --paths '/admin-ui*' '/*' '/product-ui*'
+                      '''
+              }
+            }
+          }
+       }
+       
+         stage ('Test') {
+          steps {
+              container(name: 'nodejs'){
+              sh '''
+              npm cache clean -f
+              npm install
+              CI=true npm run test-ci || true
+              ls -l
+              '''
+          }
+        }
+      }
+         stage('Junit Report') {
+         steps {
+            script {
+            if(env.NAMESPACE != "prod-riq-cloud") {
+            junit keepLongStdio: true, testResults: 'junit.xml'
+               }
+            }
+         }
+     }
+ 
+}
+    
+    post { 
+    success {  
+      echo "${env.JOB_NAME} successful in $ENV_NAME env. Sending email. "
+      mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD_NUMBER} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: 'devops', mimeType: 'text/html', replyTo: '', subject: "Build Success: Project name -> ${env.JOB_NAME} in ${env.ENV_NAME}", to: "${EMAIL_TO}";  
+    }  
+    failure {
+      echo "${env.JOB_NAME} failed in $ENV_NAME env. Sending email."
+      mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD_NUMBER} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: '', mimeType: 'text/html', replyTo: '', subject: "Build Failed: Project name -> ${env.JOB_NAME} in ${env.ENV_NAME}", to: "${EMAIL_TO}";  
+    }
+  }
+
+}

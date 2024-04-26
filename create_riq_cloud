@@ -1,0 +1,176 @@
+pipeline {
+  environment {
+        EMAIL_TO = 'devops-team@releaseiq.io'
+        INFRA_REPO='https://github.com/riqio/infra.git'
+        RIQ_CLOUD_NS="${FRIENDLY_NAME}-riq-cloud"
+        MYSQLDB_NAME="${FRIENDLY_NAME}-cloud-mysqldb"
+        DB_CHARTS='stable/mysql'
+        VALUES_FILE_LOC='eks/mysql'
+        DB_VALUES_FILE='riq_sql_values.yaml'
+        INGRESS_LOC='eks/Ingress'
+        INGRESS_FILE='solta_riq_cloud.yaml'
+        SECRET_FILE='awssecret.yaml'
+        BUCKET='s3://riq-staging/customer_onboarding'
+        RESOURCE='resource.txt'
+        GIT_AUTH = credentials('github')
+  }
+  
+agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: helm
+      spec:
+        containers:
+        - name: helm
+          image: docker.io/dtzar/helm-kubectl:3.1.2
+          imagePullPolicy: IfNotPresent
+          command:
+          - cat
+          tty: true
+        - name: awscli
+          image: amazon/aws-cli
+          imagePullPolicy: IfNotPresent
+          command:
+          - cat
+          tty: true
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+  
+    stages {
+        
+    stage('MySQL Pkg Update') {
+      steps {
+          buildName "${FRIENDLY_NAME}-riq-cloud"
+          echo "checkout infra repo $INFRA_REPO"
+          echo '================================================'
+          checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/infra.git']]])
+          container(name: 'awscli') {
+              withAWS(region:'us-east-1',credentials:'aws'){
+              sh '''
+              aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE .
+              sed -i '/=/!d' $RESOURCE
+              ls -l $RESOURCE
+              chmod 777 $RESOURCE
+              chown -R 1000:1000 $RESOURCE
+              ls -l $RESOURCE
+              . $RESOURCE
+              
+              echo "Passing TentantId value $TENANT_UUID"
+              cd $VALUES_FILE_LOC
+              cp $DB_VALUES_FILE ${FRIENDLY_NAME}_values.yaml
+              echo TenantId value before update
+              grep riq_agent.tenantId: ${FRIENDLY_NAME}_values.yaml
+              sed -i "s/riq_agent.tenantId:.*/riq_agent.tenantId: $TENANT_UUID/" ${FRIENDLY_NAME}_values.yaml
+              echo TenantId value after update 
+              grep riq_agent.tenantId: ${FRIENDLY_NAME}_values.yaml
+              '''
+            }
+          container(name: 'helm') {
+            sh '''
+            echo ''
+            echo 'Ingress File Creation for New Customer'
+            echo '======================================'
+            . $RESOURCE
+            pwd
+            cd $WORKSPACE/$INGRESS_LOC
+            cp $INGRESS_FILE ${FRIENDLY_NAME}_riq_cloud.yaml
+            sed -i "s/solta/${FRIENDLY_NAME}/g" ${FRIENDLY_NAME}_riq_cloud.yaml
+            cat ${FRIENDLY_NAME}_riq_cloud.yaml
+            kubectl create ns $RIQ_CLOUD_NS || true
+            kubectl create -f ${FRIENDLY_NAME}_riq_cloud.yaml -n $RIQ_CLOUD_NS
+              
+            echo 'Create & Deploy Secrets'
+            echo '======================='
+            pwd
+            cd $WORKSPACE
+            cp $SECRET_FILE ${FRIENDLY_NAME}_$SECRET_FILE
+            sed -i "s/accesskey:.*/accesskey: ${USER_ACCESSKEY}/;s/secretkey:.*/secretkey: ${USER_SECRETKEY}/" ${FRIENDLY_NAME}_$SECRET_FILE
+            cat ${FRIENDLY_NAME}_$SECRET_FILE
+            kubectl create -f ${FRIENDLY_NAME}_$SECRET_FILE -n $RIQ_CLOUD_NS
+            rm ${FRIENDLY_NAME}_$SECRET_FILE # Since secret file is not required
+            
+            echo ''
+            echo 'Install MySQL DB'
+            echo '================'
+            pwd
+            cat $VALUES_FILE_LOC/${FRIENDLY_NAME}_values.yaml
+            helm repo add stable 	https://charts.helm.sh/stable
+            helm install $MYSQLDB_NAME -n $RIQ_CLOUD_NS $DB_CHARTS -f $VALUES_FILE_LOC/${FRIENDLY_NAME}_values.yaml | tee riq-cloud.txt
+            if [ "$?" -ne "0"]
+            then
+                echo ERROR
+                exit 1
+            fi
+            echo CLOUD_JDBC=$(grep svc.cluster riq-cloud.txt) > vars.txt
+            cat vars.txt
+            cd $VALUES_FILE_LOC
+            
+            git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+            git config --global user.email "prabhu.k@releaseiq.io"
+            git config --global user.name "Prabhu Kasisekar"
+            git add ${FRIENDLY_NAME}_values.yaml
+            git add $WORKSPACE/$INGRESS_LOC/${FRIENDLY_NAME}_riq_cloud.yaml
+            git commit -m "Add ${FRIENDLY_NAME}_values.yaml"
+            git push origin HEAD:master
+            '''
+            //git push --set-upstream master
+            }
+          container(name: 'awscli') {
+              withAWS(region:'us-east-1',credentials:'aws'){
+              sh '''
+              pwd
+              if [ -f "$RESOURCE" ]
+              then
+                rm $RESOURCE
+              fi
+              aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE .
+              cat $RESOURCE
+              . vars.txt
+              echo CLOUD_JDBC=$(grep svc.cluster riq-cloud.txt) >> $RESOURCE
+              echo "$RESOURCE after add cloud_jdbc"
+              cat $RESOURCE
+              echo "Copy $RESOURCE to aws BUCKET after adding cloud_jdbc"
+              aws s3 cp $RESOURCE $BUCKET/$FRIENDLY_NAME/
+              echo FRIENDLY_NAME=$FRIENDLY_NAME > $WORKSPACE/var.properties
+              cat $WORKSPACE/var.properties
+              '''
+              script {
+            def props = readProperties file: 'var.properties'
+            env.FRIENDLY_NAME = props.FRIENDLY_NAME
+            sh 'date'
+            //build job: 'create_repo_files', parameters: [
+                //[$class: 'StringParameterValue', name: 'FRIENDLY_NAME', value: "$FRIENDLY_NAME"]
+                //], propagate: true, wait: true
+        
+            sh 'date'
+            }
+         
+        }
+      }
+    }
+  }
+}
+    
+}
+}
+
+/*
+              echo 'Check whether all required variables have values assigned'
+              while read -r line; do
+                var=`echo $line | cut -d '=' -f1`
+                test=$(echo $var)
+                if [ -z "$(test)" ]; then 
+                    echo "one or more variables $test are undefined"
+                    exit 1
+                fi
+              done < $RESOURCE
+              echo "You are good to go"
+              */

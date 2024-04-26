@@ -1,0 +1,366 @@
+   pipeline {
+  environment {
+    EMAIL_TO = ' subhani.s@releaseiq.io'
+    AUTOMATION_DIR='build/automation'
+    USER_NAME="tsubhanishaik86@gmail.com"
+    App="app.txt"
+    unique_Id = UUID.randomUUID().toString()
+	unique_ID1 = UUID.randomUUID().toString()
+	ACCOUNT_NAME="$ACCOUNT_NAME"
+	ADMIN_EMAIL="$ADMIN_EMAIL"
+  }
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: kaniko
+      spec:
+        containers:
+        - name: awscli
+          image: amazon/aws-cli
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: curl
+          image: docker.io/gempesaw/curl-jq:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:debug-539ddefcae3fd6b411a95982a830d987f4214251
+          imagePullPolicy: IfNotPresent
+          command:
+          - cat
+          tty: true
+          volumeMounts:
+            - name: docker-config
+              mountPath: /kaniko/.docker
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+    stages{
+	 
+      stage('AWS SERVICES') {
+          steps {
+		  checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/riq-jenkins-pipeline-jobs.git']]])
+		    sh '''
+			echo "$unique_ID1"
+			echo 'TENANT_UUID="'"$unique_ID1"'"' > $WORKSPACE/resource.txt
+			echo 'ACCOUNT_NAME="'"$ACCOUNT_NAME"'"' >> $WORKSPACE/resource.txt
+			. $WORKSPACE/resource.txt
+			export ACCOUNT_NAME="$ACCOUNT_NAME" 
+			echo 'ACCOUNT_NAME="'"$ACCOUNT_NAME"'"' > $WORKSPACE/sample1.txt
+			FRIENDLY_NAME=$(cat sample1.txt |sed 's/ACCOUNT_NAME//g;s/ //g;s/_//g;s/-//g;s#&##g;s/[/]//g;s/[.]//g;s/[~]//g;s/!//g;s/@//g;s/#//g;s/[$]//g;s/[%]//g;s/*//g;s/[{]//g;s/[}]//g;s/[(]//g;s/[)]//g;s/+//g;s/=//g;s/[;]//g;s/[:]//g;s/,//g;s/?//g;s/\"//g;s/>//g;s/<//g;s/[|]//g;s/[]]//g;s/[[]//g')
+			echo 'FRIENDLY_NAME="'"$FRIENDLY_NAME"'"' >> $WORKSPACE/resource.txt
+			. $WORKSPACE/resource.txt
+			'''
+			
+			
+			container(name: 'awscli'){
+            withAWS(region:'us-west-2',credentials:'aws') {
+                        script {
+                            sh '''
+                            . $WORKSPACE/resource.txt
+cd $AUTOMATION_DIR
+aws s3api create-bucket --bucket $FRIENDLY_NAME-logs --region $Region --create-bucket-configuration LocationConstraint=$Region
+aws s3 cp sample.txt s3://${FRIENDLY_NAME}-logs/staging/cdn-logs/
+aws s3 cp sample.txt s3://${FRIENDLY_NAME}-logs/customer_onbording/
+sed -i "s|Customer_bucket_logs|${FRIENDLY_NAME}-logs|g" riq-lambda-s3.json
+sed -i "s|Account_id|${Account_id}|g" riq-lambda-sqs.json
+cat riq-lambda-sqs.json
+aws iam create-policy --policy-name $FRIENDLY_NAME-riq-lambda-s3 --policy-document file://riq-lambda-s3.json
+aws iam create-policy --policy-name $FRIENDLY_NAME-riq-lambda-sqs --policy-document file://riq-lambda-sqs.json
+aws iam create-role --role-name $FRIENDLY_NAME-lambda --assume-role-policy-document file://trust-policy.json
+aws iam attach-role-policy --policy-arn arn:aws:iam::$Account_id:policy/$FRIENDLY_NAME-riq-lambda-sqs --role-name $FRIENDLY_NAME-lambda
+aws iam attach-role-policy --policy-arn arn:aws:iam::$Account_id:policy/$FRIENDLY_NAME-riq-lambda-s3 --role-name $FRIENDLY_NAME-lambda
+aws iam attach-role-policy --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole --role-name $FRIENDLY_NAME-lambda
+
+
+aws iam create-user --user-name $FRIENDLY_NAME
+export POLICYARN1=$(aws iam list-policies --query 'Policies[?PolicyName==`AmazonCognitoPowerUser`].{ARN:Arn}' --output text)
+echo 'POLICYARN1="'"$POLICYARN1"'"' >> $WORKSPACE/resource.txt
+aws iam attach-user-policy --user-name $FRIENDLY_NAME --policy-arn $POLICYARN1
+aws iam create-access-key --user-name $FRIENDLY_NAME | tee automation.txt
+USER_ACCESSKEY=$( grep "AccessKeyId" automation.txt | awk '{print$2}')
+echo "user accesskey $USER_ACCESSKEY"
+USER_ACCESSKEY=$(echo  $USER_ACCESSKEY | sed 's/"//g')
+USER_ACCESSKEY=$(echo $USER_ACCESSKEY | sed 's/,//g')
+echo "USER_ACCESSKEY $USER_ACCESSKEY"
+USER_ACCESSKEY=$(echo -n "$USER_ACCESSKEY" | base64)
+echo 'USER_ACCESSKEY="'"$USER_ACCESSKEY"'"' >> $WORKSPACE/resource.txt
+echo  "USER_ACCESSKEY $USER_ACCESSKEY"
+USER_SECRETKEY=$( grep "SecretAccessKey" automation.txt | awk '{print$2}' )
+echo "user secretkey $USER_SECRETKEY"
+USER_SECRETKEY=$(echo  $USER_SECRETKEY | sed 's/"//g;s/,//g')
+echo "user_secret key $USER_SECRETKEY"
+USER_SECRETKEY=$(echo -n "$USER_SECRETKEY" | base64)
+echo 'USER_SECRETKEY="'"$USER_SECRETKEY"'"' >> $WORKSPACE/resource.txt
+echo  "user_secret key $USER_SECRETKEY"
+echo "IAM User Created"
+
+
+echo "S3 bucket "
+cd $WORKSPACE
+cd $AUTOMATION_DIR		
+BUCKET_NAME="$FRIENDLY_NAME-riq"
+CALLEREFERENCE="$FRIENDLY_NAME"
+aws s3api create-bucket --bucket $BUCKET_NAME --region $Region --create-bucket-configuration LocationConstraint=$Region | tee automation.txt
+cat automation.txt
+S3_BUCKET_NAME=$( grep "Location" automation.txt | awk '{print$2}')
+echo " S3_BUCKET_NAME $S3_BUCKET_NAME"
+S3_BUCKET_NAME=$(echo  $S3_BUCKET_NAME | sed 's/"//g')
+echo 'S3_BUCKET_NAME="'"$S3_BUCKET_NAME"'"' | tee automation.txt
+sed -i "s|http://||g" automation.txt
+sed -i "s|.s3.amazonaws.com/||g" automation.txt
+cat automation.txt  >> $WORKSPACE/resource.txt
+cat $WORKSPACE/resource.txt
+sed -i "s|Account_id|${Account_id}|g" customer_s3.json
+sed -i "s|FRIENDLY_NAME|${FRIENDLY_NAME}|g" customer_s3.json
+sed -i "s|Lambda-value|${FRIENDLY_NAME}-lambda|g" customer_s3.json
+sed -i "s|bucket_name|${BUCKET_NAME}|g" customer_s3.json
+sed -i "s|TENANT_UUID|${TENANT_UUID}|g" customer_s3.json
+aws s3 cp sample.txt s3://${BUCKET_NAME}/${TENANT_UUID}/sqs_temp/
+cat customer_s3.json
+aws s3api put-bucket-policy --bucket $BUCKET_NAME --policy file://customer_s3.json
+
+
+
+echo "Created S3 Bucket"
+
+
+
+echo "SQS QUEUES"
+SQS_NAME="${FRIENDLY_NAME}_health_riq-agent_productbe.fifo"
+SQS_NAME1="${FRIENDLY_NAME}_pipeline_riq-agent_productbe.fifo"
+SQS_NAME2="${FRIENDLY_NAME}_actions_productbe_riq-agent.fifo"
+SQS_NAME3="${FRIENDLY_NAME}_adminbe_riq-agent.fifo"
+SQS_NAME4="${FRIENDLY_NAME}_riq-agent_adminbe.fifo"
+SQS_NAME5="${FRIENDLY_NAME}_insights_riq-agent_productbe.fifo"
+cd $WORKSPACE
+cd $AUTOMATION_DIR
+sed -i "s|KmsMasterKeyId_Value|${KmsMasterKeyId_Value}|g" customer_sqs_creartion.json
+aws sqs create-queue --queue-name $SQS_NAME --region $Region --attributes file://customer_sqs_creartion.json | tee 	automation.txt
+HEALTH_SQS_QUEUE=$(grep "QueueUrl" 	automation.txt | awk '{print$2}')
+echo "HEALTH_SQS_QUEUE url $HEALTH_SQS_QUEUE"
+HEALTH_SQS_QUEUE=$(echo  $HEALTH_SQS_QUEUE | sed 's/"//g')
+echo 'HEALTH_SQS_QUEUE="'"$HEALTH_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+aws sqs create-queue --queue-name $SQS_NAME1 --region $Region --attributes file://customer_sqs_creartion.json | tee 	automation.txt
+PORTAL_SQS_QUEUE=$(grep "QueueUrl" 	automation.txt | awk '{print$2}')
+echo "PORTAL_SQS_QUEUE url $PORTAL_SQS_QUEUE"
+PORTAL_SQS_QUEUE=$(echo  $PORTAL_SQS_QUEUE | sed  's/"//g')
+echo 'PORTAL_SQS_QUEUE="'"$PORTAL_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+aws sqs create-queue --queue-name $SQS_NAME2 --region $Region --attributes file://customer_sqs_creartion.json | tee automation.txt
+MANAGE_SQS_QUEUE=$(grep "QueueUrl" 	automation.txt | awk '{print$2}')
+echo "MANAGE_SQS_QUEUE url $MANAGE_SQS_QUEUE"
+MANAGE_SQS_QUEUE=$(echo  $MANAGE_SQS_QUEUE | sed 's/"//g')
+echo 'MANAGE_SQS_QUEUE="'"$MANAGE_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+aws sqs create-queue --queue-name $SQS_NAME3 --region $Region --attributes file://customer_sqs_creartion.json | tee automation.txt
+SETTING_SQS_QUEUE=$(grep "QueueUrl" automation.txt | awk '{print$2}')
+echo "SETTING_SQS_QUEUE=$SETTING_SQS_QUEUE"
+SETTING_SQS_QUEUE=$(echo  $SETTING_SQS_QUEUE | sed 's/"//g')
+echo 'SETTING_SQS_QUEUE="'"$SETTING_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+aws sqs create-queue --queue-name $SQS_NAME4 --region $Region --attributes file://customer_sqs_creartion.json | tee automation.txt
+ACK_SQS_QUEUE=$(grep "QueueUrl" automation.txt | awk '{print$2}')
+echo "ACK_SQS_QUEUE $ACK_SQS_QUEUE"
+ACK_SQS_QUEUE=$(echo  $ACK_SQS_QUEUE | sed 's/"//g')
+echo 'ACK_SQS_QUEUE="'"$ACK_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+aws sqs create-queue --queue-name $SQS_NAME5 --region $Region --attributes file://customer_sqs_creartion.json | tee automation.txt
+INSIGHTS_SQS_QUEUE=$(grep "QueueUrl" automation.txt | awk '{print$2}')
+echo "INSIGHTS_SQS_QUEUE $INSIGHTS_SQS_QUEUE"
+INSIGHTS_SQS_QUEUE=$(echo  $INSIGHTS_SQS_QUEUE | sed 's/"//g')
+echo 'INSIGHTS_SQS_QUEUE="'"$INSIGHTS_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+sed -i "s|queue.fifo|${SQS_NAME}|g" customer_sqs.json
+sed -i "s|queue1.fifo|${SQS_NAME1}|g" customer_sqs.json
+sed -i "s|queue2.fifo|${SQS_NAME2}|g" customer_sqs.json
+sed -i "s|queue3.fifo|${SQS_NAME3}|g" customer_sqs.json
+sed -i "s|queue4.fifo|${SQS_NAME4}|g" customer_sqs.json
+sed -i "s|queue5.fifo|${SQS_NAME5}|g" customer_sqs.json
+sed -i "s|Region|${Region}|g" customer_sqs.json
+sed -i "s|Account_id|${Account_id}|g" customer_sqs.json
+aws iam create-policy --policy-name ${FRIENDLY_NAME}.onboarding --policy-document file://customer_sqs.json | tee automation.txt
+aws iam attach-user-policy --policy-arn arn:aws:iam::$Account_id:policy/${FRIENDLY_NAME}.onboarding --user-name $FRIENDLY_NAME
+POLICY_ARN=$(grep "Arn" automation.txt | awk '{print$2}')
+POLICY_ARN=$(echo  $POLICY_ARN | sed 's/"//g;s/,//g')
+echo 'POLICY_ARN="'"$POLICY_ARN"'"' >> $WORKSPACE/resource.txt
+cat $WORKSPACE/resource.txt
+echo "Created Sqs Queues"
+
+
+echo  "Create ses email policy"
+cd $WORKSPACE
+cd $AUTOMATION_DIR
+sed -i "s|SES_EMAIL_ARN|${SES_EMAIL_ARN}|g" customer_ses.json
+aws iam create-policy --policy-name $FRIENDLY_NAME --policy-document file://customer_ses.json | tee automation.txt 
+aws iam attach-user-policy --policy-arn arn:aws:iam::$Account_id:policy/$FRIENDLY_NAME --user-name $FRIENDLY_NAME
+POLICY_ARN1=$(grep "Arn" automation.txt | awk '{print$2}')
+POLICY_ARN1=$(echo  $POLICY_ARN1 | sed 's/"//g;s/,//g')
+echo 'POLICY_ARN1="'"$POLICY_ARN1"'"' >> $WORKSPACE/resource.txt
+cat $WORKSPACE/resource.txt
+
+
+ 
+DOMAIN_NAME="$FRIENDLY_NAME.$Customer_domainname"
+DOMAIN_NAME1="*.$FRIENDLY_NAME.$Customer_domainname"
+BUCKET_NAME="$FRIENDLY_NAME-riq"
+CALLEREFERENCE="$FRIENDLY_NAME"
+ACM_CERTIFICATE_ARN=$(aws acm request-certificate --domain-name "$DOMAIN_NAME" --subject-alternative-names "$DOMAIN_NAME1" --validation-method DNS --region us-east-1 --query CertificateArn --output text)
+echo $ACM_CERTIFICATE_ARN
+echo 'ACM_CERTIFICATE_ARN="'"$ACM_CERTIFICATE_ARN"'"' >> $WORKSPACE/resource.txt
+sleep 60;
+VALIDATION_NAME="$(aws acm describe-certificate --region us-east-1 --certificate-arn "$ACM_CERTIFICATE_ARN" --query "Certificate.DomainValidationOptions[?DomainName=='$DOMAIN_NAME'].ResourceRecord.Name" --output text)"
+echo $VALIDATION_NAME
+echo 'VALIDATION_NAME="'"$VALIDATION_NAME"'"' >> $WORKSPACE/resource.txt
+VALIDATION_VALUE="$(aws acm describe-certificate --region us-east-1 --certificate-arn "$ACM_CERTIFICATE_ARN" --query "Certificate.DomainValidationOptions[?DomainName=='$DOMAIN_NAME'].ResourceRecord.Value" --output text)"
+echo $VALIDATION_VALUE
+echo 'VALIDATION_VALUE="'"$VALIDATION_VALUE"'"' >> $WORKSPACE/resource.txt
+VALIDATION_NAME1="$(aws acm describe-certificate --region us-east-1 --certificate-arn "$ACM_CERTIFICATE_ARN" --query "Certificate.DomainValidationOptions[?DomainName=='$DOMAIN_NAME1'].ResourceRecord.Name" --output text)"
+echo $VALIDATION_NAME1
+VALIDATION_VALUE1="$(aws acm describe-certificate --region us-east-1 --certificate-arn "$ACM_CERTIFICATE_ARN" --query "Certificate.DomainValidationOptions[?DomainName=='$DOMAIN_NAME1'].ResourceRecord.Value" --output text)"
+echo $VALIDATION_VALUE1
+sed -i "s|"VALIDATION_NAME"|${VALIDATION_NAME}|g" customer_cnt.json
+sed -i "s|"VALIDATION_VALUE"|${VALIDATION_VALUE}|g" customer_cnt.json
+sed -i "s|"VALIDATION_NAME1"|${VALIDATION_NAME1}|g" customer_cnt1.json
+sed -i "s|"VALIDATION_VALUE1"|${VALIDATION_VALUE1}|g" customer_cnt1.json
+cat $WORKSPACE/build/automation/customer_cnt1.json
+aws route53 change-resource-record-sets --region us-east-1 --hosted-zone-id $HOSTZONE_ID --change-batch file://customer_cnt.json
+ACM_CERTIFICATE_STATUS="$(aws acm describe-certificate --region us-east-1 --certificate-arn "$ACM_CERTIFICATE_ARN" --query "Certificate.Status" --output text)"
+echo $ACM_CERTIFICATE_STATUS
+ACM_CERTIFICATE="$(aws acm describe-certificate --region us-east-1 --certificate-arn "$ACM_CERTIFICATE_ARN" --output json)"
+echo $ACM_CERTIFICATE
+if [ "$ACM_CERTIFICATE_STATUS" = "ISSUED" ]; then
+GREP_GREEN="1;32"
+echo "$ACM_CERTIFICATE" | GREP_COLOR="$GREP_GREEN" grep --color -E "\"Status\": \"${ACM_CERTIFICATE_STATUS}\"|$"
+else
+GREP_RED="1;31"
+echo "$ACM_CERTIFICATE" | GREP_COLOR="$GREP_RED" grep --color -E "\"Status\": \"${ACM_CERTIFICATE_STATUS}\"|$"
+fi
+
+
+
+
+DOMAIN_NAME="$FRIENDLY_NAME.$Customer_domainname"
+DOMAIN_NAME1="*.$FRIENDLY_NAME.$Customer_domainname"
+CLIENT_NAME="$FRIENDLY_NAME"
+sed -i "s|DOMAIN_NAME|${DOMAIN_NAME}|g" customer_cognito.json
+aws cognito-idp create-user-pool --pool-name $FRIENDLY_NAME --auto-verified-attributes "email" --username-attributes "email" --username-configuration CaseSensitive=false --sms-verification-message "Your verification code is {####}." --email-verification-message "<p>Hello,</p>\n<p>&nbsp; We have received a request to reset your password.</p>\n\n<p>&nbsp; Please use verification code {####} to reset your password.</p>\n\n<p>Sincerely,\n  <br/>  \nSupport Team - ReleaseIq.io</p>\n" --email-verification-subject "Reset Password - Verification code" --verification-message-template="file://cognito1.json"  --sms-authentication-message "Your authentication code is {####}. " --mfa-configuration "OFF" --email-configuration SourceArn="$SES_EMAIL_ARN",ReplyToEmailAddress="$SES_EMAIL",EmailSendingAccount="DEVELOPER",From="$SES_EMAIL" --admin-create-user-config="file://customer_cognito.json" --schema Name="email",AttributeDataType="String",DeveloperOnlyAttribute="false",Mutable="true",Required="true"  --account-recovery-setting RecoveryMechanisms="[{Priority="1",Name="verified_email"}]" | tee automation.txt
+cat automation.txt
+COGNITO_POOL_ID=$( grep "Id" automation.txt | awk '{print$2}')
+echo "user pool Id $COGNITO_POOL_ID"
+COGNITO_POOL_ID=$(echo  $COGNITO_POOL_ID | sed 's/"//g')
+COGNITO_POOL_ID=$(echo $COGNITO_POOL_ID | sed 's/,//g')
+echo  'COGNITO_POOL_ID="'"$COGNITO_POOL_ID"'"' >> $WORKSPACE/resource.txt
+cat $WORKSPACE/resource.txt
+aws cognito-idp create-user-pool-client  --region $Region --user-pool-id $COGNITO_POOL_ID  --client-name $CLIENT_NAME --no-generate-secret --explicit-auth-flows "ALLOW_ADMIN_USER_PASSWORD_AUTH" "ALLOW_USER_SRP_AUTH" "ALLOW_REFRESH_TOKEN_AUTH" --prevent-user-existence-errors "ENABLED" | tee automation.txt
+COGNITO_CLIENT_ID=$(grep "ClientId" automation.txt | awk '{print$2}')
+echo "app client Id $COGNITO_CLIENT_ID"
+COGNITO_CLIENT_ID=$(echo  $COGNITO_CLIENT_ID | sed 's/"//g')
+COGNITO_CLIENT_ID=$(echo $COGNITO_CLIENT_ID | sed 's/,//g')
+echo 'COGNITO_CLIENT_ID="'"$COGNITO_CLIENT_ID"'"' >> $WORKSPACE/resource.txt
+cat $WORKSPACE/resource.txt
+aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_Admin --description "Role_Admin"
+aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_Developer --description "Role_Developer"
+aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_Executive --description "Role_Executive"
+aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_DevOps --description "Role_DevOps"
+aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_Manager --description "Role_Manager"
+aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_RIQAdmin --description "Role_RIQAdmin"
+aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_QA --description "Role_QA"
+echo "Created Cognito Pool"
+
+
+ENTERPRISE_KEY=$(date +%s | sha256sum | base64 | head -c 16 | tr "[:upper:]" "[:lower:]" | sed 's/./-/9;s/./-/14';)
+echo ENTERPRISE_KEY value is "$ENTERPRISE_KEY"
+echo 'ENTERPRISE_KEY="'"$ENTERPRISE_KEY"'"' >> $WORKSPACE/resource.txt
+echo "$unique_Id"
+ENCRYPTION_KEY=$(echo  $unique_Id | sed 's/-//g')
+echo 'ENCRYPTION_KEY="'"$ENCRYPTION_KEY"'"' >> $WORKSPACE/resource.txt
+. $WORKSPACE/resource.txt
+
+
+
+
+
+
+. $WORKSPACE/resource.txt
+BUCKET_NAME="$FRIENDLY_NAME-riq"
+CALLEREFERENCE="$FRIENDLY_NAME"
+DOMAIN_NAME="$FRIENDLY_NAME.$Customer_domainname"
+DOMAIN_NAME1="*.$FRIENDLY_NAME.$Customer_domainname"
+sed -i "s|bucket_name|${BUCKET_NAME}|g" customer_cdn.json
+sed -i "s|"arn:aws:acm:us-east-1:641518622681:certificate/583e09a0-c076-4efa-b1ee-37acd0903eea"|${ACM_CERTIFICATE_ARN}|g" customer_cdn.json
+sed -i "s|customer_reference|${CALLEREFERENCE}|g" customer_cdn.json
+sed -i "s|customer|${FRIENDLY_NAME}|g" customer_cdn.json
+sed -i "s|riq-logs|${FRIENDLY_NAME}-logs|g" customer_cdn.json
+sed -i "s|riq-logs|${FRIENDLY_NAME}-logs|g" customer_cdn.json
+sed -i "s|bugbash|${DOMAIN_NAME}|g" customer_record.json
+sed -i "s|bugbash1|${DOMAIN_NAME1}|g" customer_record1.json
+sleep 120;
+aws cloudfront create-distribution --distribution-config file://customer_cdn.json | tee automation.txt
+cat automation.txt
+CLOUDFRONT=$( grep "Id" automation.txt | awk '{print$2}')
+echo "cdn Id $CLOUDFRONT"
+CLOUDFRONT=$(echo  $CLOUDFRONT | sed 's/"//g;s/,//g')
+echo  'CLOUDFRONT="'"$CLOUDFRONT"'"' > sample.txt
+CDN=$(cat sample.txt | awk '{print$1}' | sed 's/CLOUDFRONT="//')
+echo 'CDN="'"$CDN"'"'  >> $WORKSPACE/resource.txt
+CDN_URL=$( grep "DomainName" automation.txt | awk '{print$2}')
+echo 'CDN_URL="'"$CDN_URL"'"' >> release.txt
+cat release.txt
+CDN_URL=$(echo  $CDN_URL | sed "s|${FRIENDLY_NAME}-riq.s3.amazonaws.com||g")
+CDN_URL=$(echo  $CDN_URL | sed 's/"//g;s/,//g;s/ //g')
+echo $CDN_URL
+echo 'CDN_URL="'"$CDN_URL"'"' >> $WORKSPACE/resource.txt
+sed -i "s|d312yuxouwkwn9.cloudfront.net|${CDN_URL}|g" customer_record.json
+cat customer_record.json
+sleep 30;
+aws route53 change-resource-record-sets --hosted-zone-id Z0568494V6417TSHKNL7 --change-batch file://customer_record.json
+sed -i "s|d312yuxouwkwn9.cloudfront.net|${CDN_URL}|g" customer_record1.json
+cat customer_record1.json
+aws route53 change-resource-record-sets --hosted-zone-id Z0568494V6417TSHKNL7 --change-batch file://customer_record1.json
+cat $WORKSPACE/resource.txt
+echo "Created Cdn"
+
+aws s3 cp $WORKSPACE/resource.txt s3://${FRIENDLY_NAME}-logs/customer_onbording/
+'''
+
+
+ 
+
+container(name: 'curl') {
+          sh '''
+		  cd $AUTOMATION_DIR
+		  . $WORKSPACE/resource.txt
+		token=$(curl -H 'Content-Type: application/json' -d '{"username" : "qffi0ou9tol2m5dmv51ira4ps", "password" : "1b82mur07hud680ohuigdmb0kkhc3sb68965h69nso07h15a2nt2" }' -X POST https://jupiter.api01.releaseiq.io/cm/api/authenticate-client | cut -d '"' -f6)
+		echo $token
+		echo 'token="'"$token"'"' > $WORKSPACE/token.txt
+		cat $WORKSPACE/token.txt
+		  sed -i "s|TENANT_ID|${TENANT_UUID}|" customer.json
+		  sed -i "s|AccountName|${FRIENDLY_NAME}|" customer.json
+		  sed -i "s|POOL_ID|${COGNITO_POOL_ID}|" customer.json
+			sed -i "s|CustomerName|${ACCOUNT_NAME}|" customer.json
+			sed -i "s|test16|${FRIENDLY_NAME}|" customer.json
+			sed -i "s|support@releaseiq.io|${ADMIN_EMAIL}|" customer.json
+			cat customer.json
+		 curl --header 'Content-type: application/json' -H "Authorization: Bearer ${token}" --request POST -d @./customer.json https://jupiter.api01.releaseiq.io/cm/createenterpriseresource
+		echo FRIENDLY_NAME="$FRIENDLY_NAME" > $WORKSPACE/var.properties
+				cd $WORKSPACE
+                	    echo "{\\"FRIENDLY_NAME\\": \\"$FRIENDLY_NAME\\"}" > artifact.json
+			    ls -l artifact.json
+			    cat artifact.json
+		'''
+		archiveArtifacts 'artifact.json'
+			}
+}
+}
+}
+}
+}
+}
+}

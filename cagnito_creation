@@ -1,0 +1,98 @@
+ pipeline {
+  environment {
+    EMAIL_TO = ' subhani.s@releaseiq.io'
+    AUTOMATION_DIR='build/automation'
+    USER_NAME="tsubhanishaik86@gmail.com"
+    App="app.txt"
+    unique_Id = UUID.randomUUID().toString()
+	unique_ID1 = UUID.randomUUID().toString()
+    /*
+    deleted input parameters
+    JIRA_TICKET="rsk-100"
+    BASE_PKG_NAME="solta-riq-agent"
+    DATABASE_PASSWORD="12345678"
+    ENTERPRISE_KEY="12345678"
+    */
+  }
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: awscli
+      spec:
+        containers:
+        - name: awscli
+          image: amazon/aws-cli
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: curl
+          image: docker.io/gempesaw/curl-jq:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+    stages{
+	 
+      stage('AWS SERVICES') {
+          steps {
+		    checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/riq-jenkins-pipeline-jobs.git']]])
+              script {
+			container(name: 'awscli'){
+            withAWS(region:'us-west-2',credentials:'aws') {
+            script {
+			sh '''
+			 cd $AUTOMATION_DIR
+			 FRIENDLY_NAME="rhea-free"
+			 ACCOUNT_NAME="rhea-free"
+			 ls -l
+			 CLIENT_NAME="$FRIENDLY_NAME"
+			 sed -i "s|ACCOUNT_NAME|${ACCOUNT_NAME}|g" cognito8.json
+			 cat cognito8.json
+			    CLIENT_NAME="$FRIENDLY_NAME"
+			    sed -i "s|ACCOUNT_NAME|pool|g" cognito8.json
+                aws cognito-idp create-user-pool --pool-name $FRIENDLY_NAME --auto-verified-attributes "email" --username-attributes "email" --username-configuration CaseSensitive=false --sms-verification-message "Your verification code is {####}." --email-verification-message "<p>Hello,</p>\n<p>&nbsp; We have received a request to reset your password.</p>\n\n<p>&nbsp; Please use verification code {####} to reset your password.</p>\n\n<p>Sincerely,\n  <br/>  \nSupport Team - ReleaseIq.io</p>\n" --email-verification-subject "Reset Password - Verification code" --verification-message-template="file://cognito1.json"  --sms-authentication-message "Your authentication code is {####}. " --mfa-configuration "OFF" --email-configuration SourceArn="arn:aws:ses:us-west-2:641518622681:identity/support@releaseiq.io",ReplyToEmailAddress="support@releaseiq.io",EmailSendingAccount="DEVELOPER",From="support@releaseiq.io" --admin-create-user-config="file://cognito8.json" --schema Name="email",AttributeDataType="String",DeveloperOnlyAttribute="false",Mutable="true",Required="true"  --account-recovery-setting RecoveryMechanisms="[{Priority="1",Name="verified_email"}]" | tee automation.txt
+                cat automation.txt
+                COGNITO_POOL_ID=$( grep "Id" automation.txt | awk '{print$2}')
+                echo "user pool Id $COGNITO_POOL_ID"
+                COGNITO_POOL_ID=$(echo  $COGNITO_POOL_ID | sed 's/"//g')
+                COGNITO_POOL_ID=$(echo $COGNITO_POOL_ID | sed 's/,//g')
+                echo  'COGNITO_POOL_ID="'"$COGNITO_POOL_ID"'"' >> $WORKSPACE/resource.txt
+			    cat $WORKSPACE/resource.txt
+                aws cognito-idp create-user-pool-client  --region us-west-2 --user-pool-id $COGNITO_POOL_ID  --client-name $CLIENT_NAME --no-generate-secret --explicit-auth-flows "ALLOW_ADMIN_USER_PASSWORD_AUTH" "ALLOW_USER_SRP_AUTH" "ALLOW_REFRESH_TOKEN_AUTH" --prevent-user-existence-errors "ENABLED" | tee automation.txt
+                COGNITO_CLIENT_ID=$(grep "ClientId" automation.txt | awk '{print$2}')
+                echo "app client Id $COGNITO_CLIENT_ID"
+                COGNITO_CLIENT_ID=$(echo  $COGNITO_CLIENT_ID | sed 's/"//g')
+                COGNITO_CLIENT_ID=$(echo $COGNITO_CLIENT_ID | sed 's/,//g')
+                echo 'COGNITO_CLIENT_ID="'"$COGNITO_CLIENT_ID"'"' >> $WORKSPACE/resource.txt
+			    cat $WORKSPACE/resource.txt
+			    echo "$unique_ID1"
+			    echo 'TENANT_UUID="'"$unique_ID1"'"'
+                
+                echo "Created Cognito Pool"
+			    cat $WORKSPACE/resource.txt
+                echo FRIENDLY_NAME="$FRIENDLY_NAME" > $WORKSPACE/var.properties
+				cd $WORKSPACE
+                	    echo "{\\"FRIENDLY_NAME\\": \\"$FRIENDLY_NAME\\"}" > artifact.json
+			    ls -l artifact.json
+			    cat artifact.json
+			 '''
+			 archiveArtifacts 'artifact.json'
+                        }
+            }    
+              }
+			  }
+			  }
+			  }
+			  }
+			  }

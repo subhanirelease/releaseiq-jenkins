@@ -1,0 +1,368 @@
+   pipeline {
+  environment {
+    EMAIL_TO = 'devops-team@releaseiq.io'
+    AUTOMATION_DIR='build/automation'
+    App="app.txt"
+    DB="POSTGRES"
+    unique_Id = UUID.randomUUID().toString()
+    unique_ID1 = UUID.randomUUID().toString()
+    unique_key = UUID.randomUUID().toString()
+    install_key = UUID.randomUUID().toString()
+    NAMESPACE="$NAMESPACE_URL"
+  }
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: kaniko
+      spec:
+        containers:
+        - name: awscli
+          image: amazon/aws-cli
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: curl
+          image: docker.io/gempesaw/curl-jq:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:debug-539ddefcae3fd6b411a95982a830d987f4214251
+          imagePullPolicy: IfNotPresent
+          command:
+          - cat
+          tty: true
+          volumeMounts:
+            - name: docker-config
+              mountPath: /kaniko/.docker
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+    stages{
+   
+      stage('AWS SERVICES') {
+      steps {
+      checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/riq-jenkins-pipeline-jobs.git']]])
+      sh '''
+      set +x
+      echo '=========================='
+      echo "$unique_ID1"
+      echo 'TENANT_UUID="'"$unique_ID1"'"' > $WORKSPACE/resource.txt
+      . $WORKSPACE/resource.txt
+      FRIENDLY_NAME1=$(echo $TENANT_UUID | head -c 8)
+      Date=$(date +%F)
+      DATE=$(echo $Date | sed 's/-//g')
+      echo 'FRIENDLY_NAME="'"$FRIENDLY_NAME1$DATE"'"' >> $WORKSPACE/resource.txt
+      echo "$FRIENDLY_NAME"
+      echo 'JENKINS_KEY="'"$unique_key"'"' >> $WORKSPACE/resource.txt
+      echo 'KEY_INSTALL="'"$install_key"'"' >> $WORKSPACE/resource.txt
+      echo 'DB="'"$DB"'"' >> $WORKSPACE/resource.txt
+      . $WORKSPACE/resource.txt
+      echo '=========================='
+      '''
+      
+      
+          container(name: 'awscli'){
+          withAWS(region:'us-west-2',credentials:'aws') {
+          script {
+          sh '''
+          set +x
+          echo '=========================='
+          . $WORKSPACE/resource.txt
+    echo " Creating IAM User "
+    echo "======================"
+          aws iam create-user --user-name $FRIENDLY_NAME >> /dev/null 2>&1
+          export POLICYARN1=$(aws iam list-policies --query 'Policies[?PolicyName==`AmazonCognitoPowerUser`].{ARN:Arn}' --output text)
+          echo 'POLICYARN1="'"$POLICYARN1"'"' >> $WORKSPACE/resource.txt
+          aws iam attach-user-policy --user-name $FRIENDLY_NAME --policy-arn $POLICYARN1 >> /dev/null 2>&1
+          aws iam create-access-key --user-name $FRIENDLY_NAME | tee automation.txt >> /dev/null 2>&1
+          USER_ACCESSKEY=$( grep "AccessKeyId" automation.txt | awk '{print$2}')
+          USER_ACCESSKEY=$(echo  $USER_ACCESSKEY | sed 's/"//g')
+          USER_ACCESSKEY=$(echo $USER_ACCESSKEY | sed 's/,//g')
+          USER_ACCESSKEY=$(echo -n "$USER_ACCESSKEY" | base64)
+          echo 'USER_ACCESSKEY="'"$USER_ACCESSKEY"'"' >> $WORKSPACE/resource.txt
+          USER_SECRETKEY=$( grep "SecretAccessKey" automation.txt | awk '{print$2}' )
+          USER_SECRETKEY=$(echo  $USER_SECRETKEY | sed 's/"//g;s/,//g')
+          USER_SECRETKEY=$(echo -n "$USER_SECRETKEY" | base64)
+          echo 'USER_SECRETKEY="'"$USER_SECRETKEY"'"' >> $WORKSPACE/resource.txt
+    echo "IAM User Created"
+    echo '=========================='
+  '''
+  }
+}
+}
+
+
+      container(name: 'awscli'){
+            withAWS(region:'us-west-2',credentials:'aws') {
+            sh '''
+            set +x
+            echo '=========================='
+            mkdir demo
+            aws s3 cp s3://riq-staging/devops/devops.txt $WORKSPACE/demo
+            chmod -R 777 demo/devops.txt
+            chown -R 1000:1000 demo
+            ls -l $WORKSPACE/demo/
+            echo '=========================='
+            '''
+            }
+            }
+        
+    container(name: 'awscli'){
+          withAWS(region:'us-west-2',credentials:'aws') {
+          script {
+    sh '''
+    set +x
+    echo '=========================='
+    . $WORKSPACE/resource.txt
+    . $WORKSPACE/demo/devops.txt
+    echo "Creating S3 Bucket"
+    echo "==================="
+    cd $AUTOMATION_DIR
+    BUCKET_NAME="$FRIENDLY_NAME-riq"
+    CALLEREFERENCE="$FRIENDLY_NAME"
+          aws s3api create-bucket --bucket $BUCKET_NAME --region us-west-2 --create-bucket-configuration LocationConstraint=us-west-2 | tee automation.txt
+          S3_BUCKET_NAME=$( grep "Location" automation.txt | awk '{print$2}')
+          echo " S3_BUCKET_NAME $S3_BUCKET_NAME"
+          S3_BUCKET_NAME=$(echo  $S3_BUCKET_NAME | sed 's/"//g')
+          echo 'S3_BUCKET_NAME="'"$S3_BUCKET_NAME"'"' | tee automation.txt >> /dev/null 2>&1
+          sed -i "s|http://||g" automation.txt
+          sed -i "s|.s3.amazonaws.com/||g" automation.txt
+          cat automation.txt  >> $WORKSPACE/resource.txt
+          echo 'DEPLOY_UI_S3="'"s3://$FRIENDLY_NAME-riq"'"' >> $WORKSPACE/resource.txt
+    aws s3api put-bucket-encryption --bucket $BUCKET_NAME --server-side-encryption-configuration '{ "Rules": [ { "ApplyServerSideEncryptionByDefault": { "SSEAlgorithm": "aws:kms", "KMSMasterKeyID": "arn:aws:kms:us-west-2:641518622681:key/58e078f9-1efe-41df-b07a-905b76126bc5" }, "BucketKeyEnabled": true } ] }' 
+    echo "Created S3 Bucket"
+    echo '=========================='
+  '''
+  }
+  }
+}
+        
+
+    container(name: 'awscli'){
+          withAWS(region:'us-west-2',credentials:'aws') {
+          script {
+    sh '''
+    set +x
+    . $WORKSPACE/resource.txt
+    echo "Creating Sqs Queues"
+    echo "======================"
+    cd $AUTOMATION_DIR
+    SQS_NAME="${FRIENDLY_NAME}_health_riq-agent_productbe.fifo"
+    SQS_NAME1="${FRIENDLY_NAME}_pipeline_riq-agent_productbe.fifo"
+    SQS_NAME2="${FRIENDLY_NAME}_actions_productbe_riq-agent.fifo"
+    SQS_NAME3="${FRIENDLY_NAME}_adminbe_riq-agent.fifo"
+    SQS_NAME4="${FRIENDLY_NAME}_riq-agent_adminbe.fifo"
+    SQS_NAME5="${FRIENDLY_NAME}_insights_riq-agent_productbe.fifo"
+          aws sqs create-queue --queue-name $SQS_NAME --region us-west-2 --attributes file://sqs.json | tee   automation.txt
+    HEALTH_SQS_QUEUE=$(grep "QueueUrl"  automation.txt | awk '{print$2}')
+          HEALTH_SQS_QUEUE=$(echo  $HEALTH_SQS_QUEUE | sed 's/"//g')
+          echo 'HEALTH_SQS_QUEUE="'"$HEALTH_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+          aws sqs create-queue --queue-name $SQS_NAME1 --region us-west-2 --attributes file://sqs.json | tee  automation.txt
+    PORTAL_SQS_QUEUE=$(grep "QueueUrl"  automation.txt | awk '{print$2}')
+          PORTAL_SQS_QUEUE=$(echo  $PORTAL_SQS_QUEUE | sed  's/"//g')
+          echo 'PORTAL_SQS_QUEUE="'"$PORTAL_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+          aws sqs create-queue --queue-name $SQS_NAME2 --region us-west-2 --attributes file://sqs.json | tee automation.txt
+    MANAGE_SQS_QUEUE=$(grep "QueueUrl"  automation.txt | awk '{print$2}')
+          MANAGE_SQS_QUEUE=$(echo  $MANAGE_SQS_QUEUE | sed 's/"//g')
+          echo 'MANAGE_SQS_QUEUE="'"$MANAGE_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+          aws sqs create-queue --queue-name $SQS_NAME3 --region us-west-2 --attributes file://sqs.json | tee automation.txt
+    SETTING_SQS_QUEUE=$(grep "QueueUrl" automation.txt | awk '{print$2}')
+          SETTING_SQS_QUEUE=$(echo  $SETTING_SQS_QUEUE | sed 's/"//g')
+          echo 'SETTING_SQS_QUEUE="'"$SETTING_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+          aws sqs create-queue --queue-name $SQS_NAME4 --region us-west-2 --attributes file://sqs.json | tee automation.txt
+    ACK_SQS_QUEUE=$(grep "QueueUrl" automation.txt | awk '{print$2}')
+          ACK_SQS_QUEUE=$(echo  $ACK_SQS_QUEUE | sed 's/"//g')
+          echo 'ACK_SQS_QUEUE="'"$ACK_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+    aws sqs create-queue --queue-name $SQS_NAME5 --region us-west-2 --attributes file://sqs.json | tee automation.txt
+    INSIGHTS_SQS_QUEUE=$(grep "QueueUrl" automation.txt | awk '{print$2}')
+          INSIGHTS_SQS_QUEUE=$(echo  $INSIGHTS_SQS_QUEUE | sed 's/"//g')
+          echo 'INSIGHTS_SQS_QUEUE="'"$INSIGHTS_SQS_QUEUE"'"' >> $WORKSPACE/resource.txt
+    sed -i "s|queue.fifo|${SQS_NAME}|g" sqs4.json
+    sed -i "s|queue1.fifo|${SQS_NAME1}|g" sqs4.json
+    sed -i "s|queue2.fifo|${SQS_NAME2}|g" sqs4.json
+    sed -i "s|queue3.fifo|${SQS_NAME3}|g" sqs4.json
+          sed -i "s|queue4.fifo|${SQS_NAME4}|g" sqs4.json
+    sed -i "s|queue5.fifo|${SQS_NAME5}|g" sqs4.json
+          aws iam create-policy --policy-name ${FRIENDLY_NAME}.onboarding --policy-document file://sqs4.json | tee automation.txt >> /dev/null 2>&1
+          aws iam attach-user-policy --policy-arn arn:aws:iam::641518622681:policy/${FRIENDLY_NAME}.onboarding --user-name $FRIENDLY_NAME >> /dev/null 2>&1
+    POLICY_ARN=$(grep "Arn" automation.txt | awk '{print$2}')
+          POLICY_ARN=$(echo  $POLICY_ARN | sed 's/"//g;s/,//g')
+    echo 'POLICY_ARN="'"$POLICY_ARN"'"' >> $WORKSPACE/resource.txt
+    echo "Created Sqs Queues"
+    echo '=========================='
+  '''
+      }
+    }
+  }
+        
+        
+      container(name: 'curl') {
+      sh '''
+      set +x
+      echo '=========================='
+      cd $AUTOMATION_DIR
+      . $WORKSPACE/resource.txt
+      . $WORKSPACE/demo/devops.txt
+      sed -i "s|TOKEN_USERNAME|${TOKEN_USERNAME}|" token1.json
+      sed -i "s|TOKEN_PASSWORD|${TOKEN_PASSWORD}|" token1.json
+      token=$( curl --header 'Content-type: application/json' --request POST -d @./token1.json https://${NAMESPACE}/cm/api/authenticate-client | cut -d '"' -f6) 
+      echo 'token="'"$token"'"' > $WORKSPACE/token.txt
+      sed -i "s|TENANT_ID|${TENANT_UUID}|" customer3.json
+      sed -i "s|AccountName|pool|" customer3.json
+      sed -i "s|CustomerName|pool|" customer3.json
+      sed -i "s|test16|${FRIENDLY_NAME}|" customer3.json
+      curl --header 'Content-type: application/json' -H "Authorization: Bearer ${token}" --request POST -d @./customer3.json https://${NAMESPACE}/cm/createenterpriseresource
+
+      ENTERPRISE_KEY=$(date +%s | sha256sum | base64 | head -c 16 | tr "[:upper:]" "[:lower:]" | sed 's/./-/9;s/./-/14';)
+      echo 'ENTERPRISE_KEY="'"$ENTERPRISE_KEY"'"' >> $WORKSPACE/resource.txt
+      sleep 1
+      INSTALL_ENTERPRISE_KEY=$(date +%s | sha256sum | base64 | head -c 16 | tr "[:upper:]" "[:lower:]" | sed 's/./-/9;s/./-/14';)
+      echo 'INSTALL_ENTERPRISE_KEY="'"$INSTALL_ENTERPRISE_KEY"'"' >> $WORKSPACE/resource.txt
+
+      GH_ENCRYPTED_CLIENT_SECRET=$( curl --header 'Content-type: application/json' -H "Authorization: Bearer ${token}" --request GET "https://${NAMESPACE}/cm/api/services/encrypt/credentials?enterpriseKey=$ENTERPRISE_KEY&credential=$GH_CLIENT_SECRET_VALUE")
+      echo 'GITHUB_CLIENT_SECRET="'"$GH_ENCRYPTED_CLIENT_SECRET"'"' >> $WORKSPACE/resource.txt
+      echo 'GITHUB_CLIENT_ID="'"$GH_CLIENT_ID_VALUE"'"' >> $WORKSPACE/resource.txt
+      echo '=========================='
+'''
+}   
+        
+     container(name: 'awscli'){
+            withAWS(region:'us-west-2',credentials:'aws') {
+            sh '''
+            echo '=========================='
+            set +x
+      ENCRYPTION_KEY=$(echo  $unique_Id | sed 's/-//g')
+      echo 'ENCRYPTION_KEY="'"$ENCRYPTION_KEY"'"' >> $WORKSPACE/resource.txt
+      cd $WORKSPACE
+            . $WORKSPACE/resource.txt
+            aws s3 cp resource.txt s3://riq-staging/customer_onboarding/$FRIENDLY_NAME/
+            echo '=========================='
+            '''
+               
+    }
+  }
+    
+
+
+        container(name: 'curl') {
+        sh '''
+        echo '=========================='
+        set +x
+        . $WORKSPACE/resource.txt
+        cd $AUTOMATION_DIR
+        . $WORKSPACE/demo/devops.txt
+          sed -i "s|TOKEN_USERNAME|${TOKEN_USERNAME}|" token1.json
+          sed -i "s|TOKEN_PASSWORD|${TOKEN_PASSWORD}|" token1.json
+        token=$( curl --header 'Content-type: application/json' --request POST -d @./token1.json https://${NAMESPACE}/cm/api/authenticate-client | cut -d '"' -f6) >> /dev/null 2>&1
+        echo 'token="'"$token"'"' > $WORKSPACE/token.txt >> /dev/null 2>&1
+        accesskey=$(echo $USER_ACCESSKEY | base64 -d)
+        secretkey=$(echo $USER_SECRETKEY | base64 -d)
+        DB_CLOUD_PASSWORD=$DB_CLOUD_PASSWORD
+        DB_AGENT_PASSWORD=$DB_AGENT_PASSWORD
+        DB_CLOUD=$(curl --header 'Content-type: application/json' -H "Authorization: Bearer ${token}" --request GET "https://${NAMESPACE}/cm/api/services/encrypt/credentials?enterpriseKey=${ENTERPRISE_KEY}&credential=${DB_CLOUD_PASSWORD}&encode=true") >> /dev/null 2>&1
+        DB_AGENT=$(curl --header 'Content-type: application/json' -H "Authorization: Bearer ${token}" --request GET "https://${NAMESPACE}/cm/api/services/encrypt/credentials?enterpriseKey=${ENTERPRISE_KEY}&credential=${DB_AGENT_PASSWORD}&encode=true") >> /dev/null 2>&1
+
+        ENC_ACCESS_KEY=$(curl --header 'Content-type: application/json' -H "Authorization: Bearer ${token}" --request GET "https://${NAMESPACE}/cm/api/services/encrypt/credentials?enterpriseKey=${ENTERPRISE_KEY}&credential=${accesskey}&encode=true") >> /dev/null 2>&1
+        ENC_SECRET_KEY=$(curl -G --header 'Content-type: application/json' -H "Authorization: Bearer ${token}" --request GET --data-urlencode "credential=${secretkey}" "https://${NAMESPACE}/cm/api/services/encrypt/credentials?enterpriseKey=${ENTERPRISE_KEY}&encode=true") >> /dev/null 2>&1
+        DB_PYTHON_KEY=$(curl -G --header 'Content-type: application/json' --request GET "https://${NAMESPACE}/cb-insights/insights/encrypt?password=${DB_CLOUD_PASSWORD}&key=${ENTERPRISE_KEY}")
+        sed -i "s|POOL_ID||" rhea_svc_info.json
+        sed -i "s|WEB_ID||" rhea_svc_info.json
+        sed -i "s|accesskey|${ENC_ACCESS_KEY}|" rhea_svc_info.json
+        sed -i "s|secretkey|${ENC_SECRET_KEY}|" rhea_svc_info.json
+        sed -i "s|EnterpriseKey_Value|${ENTERPRISE_KEY}|" rhea_svc_info.json
+        sed -i "s|DB_SECRETCODE|${DB_CLOUD}|" rhea_svc_info.json
+        sed -i "s|DB_PYTHON_CODE|${DB_PYTHON_KEY}|" rhea_svc_info.json
+        sed -i "s|DB_AGENT_SECRETCODE|${DB_AGENT}|" rhea_svc_info.json
+        sed -i "s|KEY_JENKINS|${JENKINS_KEY}|" rhea_svc_info.json
+        sed -i "s|KEY_INSTALL|${KEY_INSTALL}|" rhea_svc_info.json
+        sed -i "s|CUSTOMER_NAME|${FRIENDLY_NAME}|" rhea_svc_info.json
+        sed -i "s|TENANT_KEY|${TENANT_UUID}|" rhea_svc_info.json
+        sed -i "s|GH_CLIENT_ID|${GITHUB_CLIENT_ID}|" rhea_svc_info.json
+        sed -i "s|GH_ENCRYPTED_CLIENT_SECRET|${GITHUB_CLIENT_SECRET}|" rhea_svc_info.json
+        sed -i "s|INSTALL_ENT_KEY|${INSTALL_ENTERPRISE_KEY}|" rhea_svc_info.json
+        STATUS1=$(curl --header 'Content-type: application/json' -H "Authorization: Bearer ${token}" --request POST -d @./rhea_svc_info.json -o automation.txt -w '%{http_code}' "https://${NAMESPACE}/cm/api/services/config/customer/${TENANT_UUID}?notify=false&productName=PREMIUM")
+        if [ $STATUS1 -eq 500 ]; then
+        echo "Got 500! All done!"
+        exit 1
+        else
+        echo "Got $STATUS1 Worked"
+        fi
+        echo '=========================='
+        '''
+        
+        } 
+          
+          
+        container(name: 'awscli'){
+              withAWS(region:'us-west-2',credentials:'aws') {
+        sh '''
+         
+        set +x
+         
+        echo '=========================='
+        . $WORKSPACE/resource.txt
+        cd $AUTOMATION_DIR
+        sed -i "s|FRIENDLY_NAME|${FRIENDLY_NAME}|g" s3_rhea.json
+        sed -i "s|bucket_name|${S3_BUCKET_NAME}|g" s3_rhea.json
+        sed -i "s|TENANT_UUID|${TENANT_UUID}|g" s3_rhea.json
+        aws s3 cp sample.txt s3://${S3_BUCKET_NAME}/${TENANT_UUID}/sqs_temp/
+        aws s3api put-bucket-policy --bucket $S3_BUCKET_NAME --policy file://s3_rhea.json >> /dev/null 2>&1
+        echo FRIENDLY_NAME="$FRIENDLY_NAME" > $WORKSPACE/var.properties
+         
+        cd $WORKSPACE
+        
+         
+        '''
+        }
+        }
+        
+        
+        script {
+        def props = readProperties file: 'var.properties'
+        env.FRIENDLY_NAME = props.FRIENDLY_NAME
+        build job: 'rhea_mt_create_repo_files', parameters: [
+              [$class: 'StringParameterValue', name: 'FRIENDLY_NAME', value: "$FRIENDLY_NAME"]
+              ], propagate: true, wait: true
+        
+        build job: 'rhea_mt_helm_pkg_s3_dwld', parameters: [
+              [$class: 'StringParameterValue', name: 'FRIENDLY_NAME', value: "$FRIENDLY_NAME"]
+              ], propagate: true, wait: true  
+        
+        build job: 'rhea_mt_iam_update', parameters: [
+              [$class: 'StringParameterValue', name: 'FRIENDLY_NAME', value: "$FRIENDLY_NAME"]
+              ], propagate: true, wait: true
+          
+        build job: 'rhea_mt_log_parser_deploy', parameters: [
+        [$class: 'StringParameterValue', name: 'ENV_NAME', value: "$FRIENDLY_NAME"]
+        ], propagate: true, wait: true    
+      
+      
+      
+        buildName "$FRIENDLY_NAME"
+      }
+}
+}
+}
+
+post {
+         success {  
+             echo "${env.JOB_NAME} resource pool creation successful to  Sending email"
+             mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: 'devops', mimeType: 'text/html', replyTo: '', subject: "Build Success: Project name -> ${env.JOB_NAME} in ${env.BUILD}", to: "${EMAIL_TO}";  
+         }  
+         failure {
+             echo "${env.JOB_NAME} resource pool failed to Sending email"
+             mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: '', mimeType: 'text/html', replyTo: '', subject: "Build Failed: Project name -> ${env.JOB_NAME} in ${env.BUILD}", to: "${EMAIL_TO}";  
+         }  
+     }
+
+}

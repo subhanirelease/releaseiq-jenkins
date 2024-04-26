@@ -1,0 +1,878 @@
+pipeline {
+  environment {
+        EMAIL_TO = 'devops-team@releaseiq.io'
+        MASTER_NAMESPACE='stage01'
+        BASE_PKG_NAME='solta-riq-agent'
+        BUCKET="s3://riq-staging/customer_onboarding"
+        ONBOARDING="onboarding"
+        RESOURCE="resource.txt"
+        PKG='pkg'
+        RIQAGENT='riq-agent'
+        WFREPO='svc_workflowexecutor'
+        WFMODULE='deployment/helm/workflow'
+        WFCHARTS='charts/workflow'
+        OCREPO='svc_orchestrator'
+        OCMODULE='deployment/helm/orchestrator'
+        OCCHARTS='charts/orchestrator'
+        RSREPO='svc_orchestrator_resilience'
+        RSMODULE='deployment/helm/resilience'
+        RSCHARTS='charts/resilience'
+        PBREPO='svc_riqpubsub'
+        PBMODULE='deployment/helm/pubsub'
+        PBCHARTS='charts/pubsub'
+        LRREPO='svc_listener'
+        LRMODULE='deployment/helm/listener'
+        LRCHARTS='charts/listener'
+        CIREPO='riq-ci-insights'
+        CIMODULE='deployment/helm/ci_insights'
+        CICHARTS='charts/ciinsights'
+        CSREPO='riq-cloud-synchronizer'
+        CSMODULE='deployment/helm/cloud-synchronizer'
+        PBEREPO='product-app-be'
+        PBEMODULE='deployment/helm/product-app-be'
+        ABEREPO='riq-admin-be'
+        ABEMODULE='deployment/helm/enterprise-management'
+        NOTIFICATIONREPO='notifications'
+        NOTIFICATIONMODULE='deployment/helm/riq-notification'
+        AUIREPO='riq-admin-ui'
+        AUIMODULE='src'
+        AUIFILE='commonfile.js'
+        PUIREPO='product-ui'
+        PUIMODULE='src/constants/'
+        PUIFILE='config.js'
+        LOGPARSERREPO='riq_log_parser'
+        LOGPARSERMODULE='deployment'
+        APPPROPERTIES='files/application.properties'
+        VALUES='values.yaml'
+        BR="${FRIENDLY_NAME}"
+        CUSTAGENT="${FRIENDLY_NAME}-riq-agent"
+        CUSTCLOUD="${FRIENDLY_NAME}-riq-cloud"
+        DEVOPS_PRODUCTUI_DIR='build/product-ui'
+        DEVOPS_PRODUCTUI_FILE='ui-variables'
+        DEVOPSREPO='riq-jenkins-pipeline-jobs'
+        DEVOPS_HELM_PKG_DIR='build/helm-package'
+        DEVOPS_HELM_PKG_S3_FILE='s3_variables'
+        DEVOPS_HELM_PKG_CUSTOMER_LIST='stage01.list'
+        GIT_AUTH = credentials('github')
+  }
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: aws
+      spec:
+        containers:
+        - name: awscli
+          image: amazon/aws-cli
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+    stages {
+    stage('Package Creation') {
+      steps {
+        buildName "$FRIENDLY_NAME"
+        echo 'Checkout WORKFLOW repo'
+        echo '======================='
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${WFREPO}.git"]]])
+        container(name: 'awscli') {
+        withAWS(region:'us-east-1',credentials:'aws'){
+          sh '''
+          mkdir $ONBOARDING
+          aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE $WORKSPACE/$ONBOARDING/
+          chmod -R 777 $ONBOARDING/$RESOURCE
+          chown -R 1000:1000 $ONBOARDING
+          ls -l $WORKSPACE/$ONBOARDING/
+          sed -i 's/^/export /;/=/!d' $WORKSPACE/$ONBOARDING/$RESOURCE
+          . $WORKSPACE/$ONBOARDING/$RESOURCE
+          echo Lets do some testing - variable ENTERPRISE_KEY "${ENTERPRISE_KEY}"
+          '''
+            }
+        }
+        sh '''
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        BR="${FRIENDLY_NAME}"
+        echo 'Figure out branch already exists $BR'
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git ls-remote --heads origin $BR
+        wc=$(git ls-remote --heads origin $BR |wc |awk '{print$1}')
+        echo 'Value of wc is $wc'
+        if [ $wc -ne 0 ]
+        then
+            echo "Branch name $BR already exists, deleting it"
+            git push -d origin $BR
+            echo " Creating fresh branch $BR"
+            git checkout -b $BR
+        else
+            echo "Branch name $BR does not exists."
+            git checkout -b $BR
+        fi
+        git branch
+        cd ${WFMODULE}
+        pwd
+        ls -l
+        
+        echo ''
+        echo 'Create New Customer yaml file for WORKFLOW repo'
+        echo '==============================================='
+        echo "Value of custenv is ${CUSTAGENT}.yaml"
+        cp $BASE_PKG_NAME.yaml ${CUSTAGENT}.yaml
+        cat ${CUSTAGENT}.yaml
+        basecust=$(echo $BASE_PKG_NAME|sed 's/-riq-agent//')
+        echo "Update yaml to new customer values basecust $basecust"
+        sed -i "s/${basecust}/${FRIENDLY_NAME}/g" $WORKSPACE/${WFMODULE}/$CUSTAGENT.yaml
+        
+        if [ "$DATABASE_PASSWORD" != "" ]
+        then
+        echo 'Update dbpass with input value'
+            sed -i "s/password:.*/password: $DATABASE_PASSWORD/" $WORKSPACE/${WFMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        echo ''
+        sed -i "s/tenantId:.*/tenantId: $TENANT_UUID/" $WORKSPACE/${WFMODULE}/$CUSTAGENT.yaml
+        
+        if [ "$ENTERPRISE_KEY" != "" ]
+        then
+        echo 'Update key with input value'
+            sed -i "s/key:.*/key: $ENTERPRISE_KEY/" $WORKSPACE/${WFMODULE}/$CUSTAGENT.yaml
+        fi
+
+        if [ "$S3_BUCKET_NAME" != "" ]
+        then
+        echo 'Update s3 Bucket with input value'
+            sed -i "s#bucket: www.*#bucket: $S3_BUCKET_NAME#" $WORKSPACE/${WFMODULE}/$CUSTAGENT.yaml
+        fi
+
+        ls -l 
+        cat $WORKSPACE/${WFMODULE}/$CUSTAGENT.yaml
+        echo ''
+        echo ' Push changes and branch to remote repo'
+        echo '======================================='
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git config --global user.email "prabhu.k@releaseiq.io"
+        git config --global user.name "Prabhu Kasisekar"
+        git add .
+        git commit -m "Push file from $BR branch to master"
+        git push origin $BR:master
+        id
+        pwd
+        cd $WORKSPACE
+        rm -rf $ONBOARDING
+        '''
+        
+        echo 'Checkout ORCHESTRATOR repo'
+        echo '==========================='
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${OCREPO}.git"]]])
+        
+        container(name: 'awscli') {
+        withAWS(region:'us-east-1',credentials:'aws'){
+          sh '''
+          mkdir $ONBOARDING
+          aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE $WORKSPACE/$ONBOARDING/
+          chmod -R 777 $ONBOARDING/$RESOURCE
+          chown -R 1000:1000 $ONBOARDING
+          ls -l $WORKSPACE/$ONBOARDING/
+          ls -l | grep $ONBOARDING
+          sed -i 's/^/export /;/=/!d' $WORKSPACE/$ONBOARDING/$RESOURCE
+          '''
+           }
+        }
+        
+        sh '''
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        BR="${FRIENDLY_NAME}"
+        echo 'Figure out branch already exists $BR'
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git ls-remote --heads origin $BR
+        wc=$(git ls-remote --heads origin $BR |wc |awk '{print$1}')
+        echo 'Value of wc is $wc'
+        if [ $wc -ne 0 ]
+        then
+            echo "Branch name $BR already exists, deleting it"
+            git push -d origin $BR
+            echo " Creating fresh branch $BR"
+            git checkout -b $BR
+        else
+            echo "Branch name $BR does not exists."
+            git checkout -b $BR
+        fi
+        git branch
+        cd ${OCMODULE}
+        pwd
+        ls -l
+        
+        echo ''
+        echo 'Create New Customer yaml file for ORCHESTRATOR repo'
+        echo '==================================================='
+        echo "Value of custenv is ${CUSTAGENT}.yaml"
+        cp $BASE_PKG_NAME.yaml ${CUSTAGENT}.yaml
+        cat $CUSTAGENT.yaml
+        basecust=$(echo $BASE_PKG_NAME|sed 's/-riq-agent//')
+        echo "Update yaml to new customer values ${basecust}"
+        sed -i "s/$basecust/${FRIENDLY_NAME}/g" $WORKSPACE/${OCMODULE}/$CUSTAGENT.yaml
+        
+        if [ "$DATABASE_PASSWORD" != "" ]
+        then
+        echo 'Update dbpass with input value'
+            sed -i "s/password:.*/password: $DATABASE_PASSWORD/" $WORKSPACE/${OCMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        echo ''
+        sed -i "s/tenantId:.*/tenantId: $TENANT_UUID/" $WORKSPACE/${OCMODULE}/$CUSTAGENT.yaml
+        ls -l 
+        cat $WORKSPACE/${OCMODULE}/$CUSTAGENT.yaml
+        echo ''
+        echo ' Push changes and branch to remote repo'
+        echo '======================================='
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git config --global user.email "prabhu.k@releaseiq.io"
+        git config --global user.name "Prabhu Kasisekar"
+        git add .
+        git commit -m "Push file from $BR branch to master"
+        git push origin $BR:master
+        id
+        pwd
+        cd $WORKSPACE
+        rm -rf $ONBOARDING
+        '''
+        
+        echo 'Checkout RESILIENCE repo'
+        echo '========================='
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${RSREPO}.git"]]])
+        
+        container(name: 'awscli') {
+        withAWS(region:'us-east-1',credentials:'aws'){
+          sh '''
+          mkdir $ONBOARDING
+          aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE $WORKSPACE/$ONBOARDING/
+          chmod -R 777 $ONBOARDING/$RESOURCE
+          chown -R 1000:1000 $ONBOARDING
+          ls -l $WORKSPACE/$ONBOARDING/
+          ls -l | grep $ONBOARDING
+          sed -i 's/^/export /;/=/!d' $WORKSPACE/$ONBOARDING/$RESOURCE
+          '''
+          }
+        }
+        
+        sh '''
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        BR="${FRIENDLY_NAME}"
+        echo 'Figure out branch already exists $BR'
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git ls-remote --heads origin $BR
+        wc=$(git ls-remote --heads origin $BR |wc |awk '{print$1}')
+        echo 'Value of wc is $wc'
+        if [ $wc -ne 0 ]
+        then
+            echo "Branch name $BR already exists, deleting it"
+            git push -d origin $BR
+            echo " Creating fresh branch $BR"
+            git checkout -b $BR
+        else
+            echo "Branch name $BR does not exists."
+            git checkout -b $BR
+        fi
+        git branch
+        cd ${RSMODULE}
+        pwd
+        ls -l
+        
+        echo ''
+        echo ''
+        echo 'Create New Customer yaml file for RESILIENCE repo'
+        echo '==================================================='
+        echo "Value of custenv is ${CUSTAGENT}.yaml"
+        cp $BASE_PKG_NAME.yaml ${CUSTAGENT}.yaml
+        cat $CUSTAGENT.yaml
+        echo ''
+        basecust=$(echo $BASE_PKG_NAME|sed 's/-riq-agent//')
+        echo "Update env value  ${basecust}"
+        sed -i "s/$basecust/${FRIENDLY_NAME}/g" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+        echo ''
+        
+        if [ "$DATABASE_PASSWORD" != "" ]
+        then
+        echo 'Update dbpass with input value'
+            sed -i "s/password:.*/password: $DATABASE_PASSWORD/" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        if [ "$S3_BUCKET_NAME" != "" ]
+        then
+        echo 'Update s3 Bucket with input value'
+            sed -i "s#name: www.*#name: $S3_BUCKET_NAME#" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        echo ''
+        echo 'Update env tenantId'
+        sed -i "s/tenantId:.*/tenantId: $TENANT_UUID/" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+        echo ''
+        
+        if [ "$ENTERPRISE_KEY" != "" ]
+        then
+        echo 'Update enterprise key with input value'
+            sed -i "s/key:.*/key: $ENTERPRISE_KEY/" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+        fi
+
+        if [ "$MASTER_NAMESPACE" = "stage01" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https://${FRIENDLY_NAME}.api.releaseiq.io/admin-be#baseurl: https://stage01.ingr02.releaseiq.io/admin-be#" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+			sed -i "s#baseurl: https://${FRIENDLY_NAME}.api.releaseiq.io/verifier#baseurl: https://stage01.ingr02.releaseiq.io/verifier#" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+		fi
+
+        if [ "$MASTER_NAMESPACE" = "rhea" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https://${FRIENDLY_NAME}.api.releaseiq.io/admin-be#baseurl: https://rhea.api.releaseiq.io/admin-be#" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+			sed -i "s#baseurl: https://${FRIENDLY_NAME}.api.releaseiq.io/verifier#baseurl: https://rhea.api.releaseiq.io/verifier#" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+		fi
+
+        if [ "$MASTER_NAMESPACE" = "prod01" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https://${FRIENDLY_NAME}.api.releaseiq.io/admin-be#baseurl: https://prod01.api.releaseiq.io/admin-be#" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+			sed -i "s#baseurl: https://${FRIENDLY_NAME}.api.releaseiq.io/verifier#baseurl: https://prod01.api.releaseiq.io/verifier#" $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+		fi
+		
+		
+        cat $WORKSPACE/${RSMODULE}/$CUSTAGENT.yaml
+        echo ''
+        echo ' Push changes and branch to remote repo'
+        echo '======================================='
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git config --global user.email "prabhu.k@releaseiq.io"
+        git config --global user.name "Prabhu Kasisekar"
+        git add .
+        git commit -m "Push file from $BR branch to master"
+        git push origin $BR:master
+        pwd
+        cd $WORKSPACE
+        rm -rf $ONBOARDING
+        '''
+        
+        echo 'Checkout PUBSUB repo'
+        echo '====================='
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${PBREPO}.git"]]])
+        
+        container(name: 'awscli') {
+        withAWS(region:'us-east-1',credentials:'aws'){
+          sh '''
+          mkdir $ONBOARDING
+          aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE $WORKSPACE/$ONBOARDING/
+          chmod -R 777 $ONBOARDING/$RESOURCE
+          chown -R 1000:1000 $ONBOARDING
+          ls -l $WORKSPACE/$ONBOARDING/
+          sed -i 's/^/export /;/=/!d' $WORKSPACE/$ONBOARDING/$RESOURCE
+          '''
+            }
+        }
+    
+        sh '''
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        BR="${FRIENDLY_NAME}"
+        echo 'Figure out branch already exists $BR'
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git ls-remote --heads origin $BR
+        wc=$(git ls-remote --heads origin $BR |wc |awk '{print$1}')
+        echo 'Value of wc is $wc'
+        if [ $wc -ne 0 ]
+        then
+            echo "Branch name $BR already exists, deleting it"
+            git push -d origin $BR
+            echo " Creating fresh branch $BR"
+            git checkout -b $BR
+        else
+            echo "Branch name $BR does not exists."
+            git checkout -b $BR
+        fi
+        git branch
+        cd ${PBMODULE}
+        pwd
+        ls -l
+        
+        echo ''
+        echo ''
+        echo 'Create New Customer yaml file for PUBSUB repo'
+        echo '==================================================='
+        echo "Value of custenv is ${CUSTAGENT}.yaml"
+        cp $BASE_PKG_NAME.yaml ${CUSTAGENT}.yaml
+        cat $CUSTAGENT.yaml
+        echo ''
+        basecust=$(echo $BASE_PKG_NAME|sed 's/-riq-agent//')
+        echo "Update env value  ${basecust}"
+        sed -i "s/$basecust/${FRIENDLY_NAME}/g" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        echo ''
+        
+        if [ "$DATABASE_PASSWORD" != "" ]
+        then
+        echo 'Update dbpass with input value'
+            sed -i "s/password:.*/password: $DATABASE_PASSWORD/" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        if [ "$HEALTH_SQS_QUEUE" != "" ]
+        then
+        echo 'Update health SQS queue with input value'
+            sed -i "s#health: https:.*#health: $HEALTH_SQS_QUEUE#" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        if [ "$PORTAL_SQS_QUEUE" != "" ]
+        then
+        echo 'Update portal SQS queue with input value'
+            sed -i "s#portal: https:.*#portal: $PORTAL_SQS_QUEUE#" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        if [ "$MANAGE_SQS_QUEUE" != "" ]
+        then
+        echo 'Update manage SQS queue with input value'
+            sed -i "s#manage: https:.*#manage: $MANAGE_SQS_QUEUE#" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        if [ "$SETTING_SQS_QUEUE" != "" ]
+        then
+        echo 'Update setting SQS queue with input value'
+            sed -i "s#setting: https:.*#setting: $SETTING_SQS_QUEUE#" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        if [ "$ACK_SQS_QUEUE" != "" ]
+        then
+        echo 'Update ack SQS queue with input value'
+            sed -i "s#ack: https:.*#ack: $ACK_SQS_QUEUE#" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        if [ "$S3_BUCKET_NAME" != "" ]
+        then
+        echo 'Update s3 Bucket with input value'
+            sed -i "s#name: www.*#name: $S3_BUCKET_NAME#" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+
+        echo ''
+        echo 'Update env tenantId'
+        sed -i "s/tenantId:.*/tenantId: $TENANT_UUID/" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        echo ''
+        
+        if [ "$ENTERPRISE_KEY" != "" ]
+        then
+        echo 'Update enterprise key with input value'
+            sed -i "s/key:.*/key: $ENTERPRISE_KEY/" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+
+        if [ "$MASTER_NAMESPACE" = "stage01" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https:.*#baseurl: https://stage01.ingr02.releaseiq.io/admin-be#" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+
+        if [ "$MASTER_NAMESPACE" = "rhea" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https:.*#baseurl: https://rhea.api.releaseiq.io/admin-be#" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+
+        if [ "$MASTER_NAMESPACE" = "prod01" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https:.*#baseurl: https://prod01.api.releaseiq.io/admin-be#" $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        cat $WORKSPACE/${PBMODULE}/$CUSTAGENT.yaml
+        echo ''
+        echo ''
+        echo ' Push changes and branch to remote repo'
+        echo '======================================='
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git config --global user.email "prabhu.k@releaseiq.io"
+        git config --global user.name "Prabhu Kasisekar"
+        git add .
+        git commit -m "Push file from $BR branch to master"
+        git push origin $BR:master
+        pwd
+        cd $WORKSPACE
+        rm -rf $ONBOARDING
+        '''
+        echo ''
+        echo ''
+        echo 'Checkout LISTENER repo'
+        echo '======================='
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${LRREPO}.git"]]])
+        
+        container(name: 'awscli') {
+        withAWS(region:'us-east-1',credentials:'aws'){
+          sh '''
+          mkdir $ONBOARDING
+          aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE $WORKSPACE/$ONBOARDING/
+          chmod -R 777 $ONBOARDING/$RESOURCE
+          chown -R 1000:1000 $ONBOARDING
+          ls -l $WORKSPACE/$ONBOARDING/
+          sed -i 's/^/export /;/=/!d' $WORKSPACE/$ONBOARDING/$RESOURCE
+          '''
+            }
+        }
+        
+        sh '''
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        BR="${FRIENDLY_NAME}"
+        echo 'Figure out branch already exists $BR'
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git ls-remote --heads origin $BR
+        wc=$(git ls-remote --heads origin $BR |wc |awk '{print$1}')
+        echo 'Value of wc is $wc'
+        if [ $wc -ne 0 ]
+        then
+            echo "Branch name $BR already exists, deleting it"
+            git push -d origin $BR
+            echo " Creating fresh branch $BR"
+            git checkout -b $BR
+        else
+            echo "Branch name $BR does not exists."
+            git checkout -b $BR
+        fi
+        git branch
+        cd ${LRMODULE}
+        pwd
+        ls -l
+        
+        echo ''
+        echo ''
+        echo 'Create New Customer yaml file for LISTENER repo'
+        echo '==================================================='
+        echo "Value of custenv is ${CUSTAGENT}.yaml"
+        cp $BASE_PKG_NAME.yaml ${CUSTAGENT}.yaml
+        cat $CUSTAGENT.yaml
+        echo ''
+        basecust=$(echo $BASE_PKG_NAME|sed 's/-riq-agent//')
+        echo "Update env value  ${basecust}"
+        sed -i "s/$basecust/${FRIENDLY_NAME}/g" $WORKSPACE/${LRMODULE}/$CUSTAGENT.yaml
+        echo ''
+        
+        if [ "$DATABASE_PASSWORD" != "" ]
+        then
+        echo 'Update dbpass with input value'
+            sed -i "s/password:.*/password: $DATABASE_PASSWORD/" $WORKSPACE/${LRMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        echo ''
+        echo 'Update env tenantId'
+        sed -i "s/tenantId:.*/tenantId: $TENANT_UUID/" $WORKSPACE/${LRMODULE}/$CUSTAGENT.yaml
+        echo ''
+        
+        if [ "$ENTERPRISE_KEY" != "" ]
+        then
+        echo 'Update enterprise key with input value'
+            sed -i "s/key:.*/key: $ENTERPRISE_KEY/" $WORKSPACE/${LRMODULE}/$CUSTAGENT.yaml
+        fi
+
+        if [ "$MASTER_NAMESPACE" = "stage01" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https:.*#baseurl: https://stage01.ingr02.releaseiq.io/admin-be#" $WORKSPACE/${LRMODULE}/$CUSTAGENT.yaml
+        fi
+
+        if [ "$MASTER_NAMESPACE" = "rhea" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https:.*#baseurl: https://rhea.api.releaseiq.io/admin-be#" $WORKSPACE/${LRMODULE}/$CUSTAGENT.yaml
+        fi
+
+        if [ "$MASTER_NAMESPACE" = "prod01" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https:.*#baseurl: https://prod01.api.releaseiq.io/admin-be#" $WORKSPACE/${LRMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        cat $WORKSPACE/${LRMODULE}/$CUSTAGENT.yaml
+        echo ''
+        echo ''
+        echo ' Push changes and branch to remote repo'
+        echo '======================================='
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git config --global user.email "prabhu.k@releaseiq.io"
+        git config --global user.name "Prabhu Kasisekar"
+        git add .
+        git commit -m "Push file from $BR branch to master"
+        git push origin $BR:master
+        pwd
+        cd $WORKSPACE
+        rm -rf $ONBOARDING
+        '''
+        
+        echo 'Checkout CIINSIGHTS repo'
+        echo '========================='
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${CIREPO}.git"]]])
+        
+        container(name: 'awscli') {
+        withAWS(region:'us-east-1',credentials:'aws'){
+          sh '''
+          mkdir $ONBOARDING
+          aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE $WORKSPACE/$ONBOARDING/
+          chmod -R 777 $ONBOARDING/$RESOURCE
+          chown -R 1000:1000 $ONBOARDING
+          ls -l $WORKSPACE/$ONBOARDING/
+          ls -l | grep $ONBOARDING
+          sed -i 's/^/export /;/=/!d' $WORKSPACE/$ONBOARDING/$RESOURCE
+          '''
+          }
+        }
+        
+        sh '''
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        BR="${FRIENDLY_NAME}"
+        echo 'Figure out branch already exists $BR'
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git ls-remote --heads origin $BR
+        wc=$(git ls-remote --heads origin $BR |wc |awk '{print$1}')
+        echo 'Value of wc is $wc'
+        if [ $wc -ne 0 ]
+        then
+            echo "Branch name $BR already exists, deleting it"
+            git push -d origin $BR
+            echo " Creating fresh branch $BR"
+            git checkout -b $BR
+        else
+            echo "Branch name $BR does not exists."
+            git checkout -b $BR
+        fi
+        git branch
+        cd ${CIMODULE}
+        pwd
+        ls -l
+        
+        echo ''
+        echo ''
+        echo 'Create New Customer yaml file for CIINSIGHTS repo'
+        echo '==================================================='
+        echo "Value of custenv is ${CUSTAGENT}.yaml"
+        cp $BASE_PKG_NAME.yaml ${CUSTAGENT}.yaml
+        cat $CUSTAGENT.yaml
+        echo ''
+        basecust=$(echo $BASE_PKG_NAME|sed 's/-riq-agent//')
+        echo "Update env value  ${basecust}"
+        sed -i "s/$basecust/${FRIENDLY_NAME}/g" $WORKSPACE/${CIMODULE}/$CUSTAGENT.yaml
+        echo ''
+        
+        if [ "$DATABASE_PASSWORD" != "" ]
+        then
+        echo 'Update dbpass with input value'
+            sed -i "s/password:.*/password: $DATABASE_PASSWORD/" $WORKSPACE/${CIMODULE}/$CUSTAGENT.yaml
+        fi
+        
+        echo ''
+        echo 'Update env tenantId'
+        sed -i "s/tenantId:.*/tenantId: $TENANT_UUID/" $WORKSPACE/${CIMODULE}/$CUSTAGENT.yaml
+        echo ''
+        
+        if [ "$ENTERPRISE_KEY" != "" ]
+        then
+        echo 'Update enterprise key with input value'
+            sed -i "s/key:.*/key: $ENTERPRISE_KEY/" $WORKSPACE/${CIMODULE}/$CUSTAGENT.yaml
+        fi
+	
+	if [ "$S3_BUCKET_NAME" != "" ]
+        then
+        echo 'Update s3 Bucket with input value'
+            sed -i "s#name: www.*#name: $S3_BUCKET_NAME#" $WORKSPACE/${CIMODULE}/$CUSTAGENT.yaml
+        fi
+	
+        if [ "$MASTER_NAMESPACE" = "stage01" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https://${FRIENDLY_NAME}.api.releaseiq.io/admin-be#baseurl: https://stage01.ingr02.releaseiq.io/admin-be#" $WORKSPACE/${CIMODULE}/$CUSTAGENT.yaml
+	fi
+
+        if [ "$MASTER_NAMESPACE" = "rhea" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https://${FRIENDLY_NAME}.api.releaseiq.io/admin-be#baseurl: https://rhea.api.releaseiq.io/admin-be#" $WORKSPACE/${CIMODULE}/$CUSTAGENT.yaml
+	fi
+
+        if [ "$MASTER_NAMESPACE" = "prod01" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+            sed -i "s#baseurl: https://${FRIENDLY_NAME}.api.releaseiq.io/admin-be#baseurl: https://prod01.api.releaseiq.io/admin-be#" $WORKSPACE/${CIMODULE}/$CUSTAGENT.yaml
+	fi
+		
+		
+        cat $WORKSPACE/${CIMODULE}/$CUSTAGENT.yaml
+        echo ''
+        echo ' Push changes and branch to remote repo'
+        echo '======================================='
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git config --global user.email "prabhu.k@releaseiq.io"
+        git config --global user.name "Prabhu Kasisekar"
+        git add .
+        git commit -m "Push file from $BR branch to master"
+        git push origin $BR:master
+        pwd
+        cd $WORKSPACE
+        rm -rf $ONBOARDING
+        '''
+                
+       echo ''
+        echo ''
+        echo 'Checkout LOG PARSER repo'
+        echo '========================='
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${LOGPARSERREPO}.git"]]])
+        
+        container(name: 'awscli') {
+        withAWS(region:'us-east-1',credentials:'aws'){
+          sh '''
+          mkdir $ONBOARDING
+          aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE $WORKSPACE/$ONBOARDING/
+          chmod -R 777 $ONBOARDING/$RESOURCE
+          chown -R 1000:1000 $ONBOARDING
+          ls -l $WORKSPACE/$ONBOARDING/
+          sed -i 's/^/export /;/=/!d' $WORKSPACE/$ONBOARDING/$RESOURCE
+          '''
+            }
+        }
+        
+        sh '''
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        BR="${FRIENDLY_NAME}"
+        echo 'Figure out branch already exists $BR'
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git ls-remote --heads origin $BR
+        wc=$(git ls-remote --heads origin $BR |wc |awk '{print$1}')
+        echo 'Value of wc is $wc'
+        if [ $wc -ne 0 ]
+        then
+            echo "Branch name $BR already exists, deleting it"
+            git push -d origin $BR
+            echo " Creating fresh branch $BR"
+            git checkout -b $BR
+        else
+            echo "Branch name $BR does not exists."
+            git checkout -b $BR
+        fi
+        git branch
+        pwd
+        ls -l
+        
+        echo ''
+        echo ''
+        echo 'Add New Customer code for LOG PARSER repo'
+        echo '=========================================='
+        cd ${LOGPARSERMODULE}
+        basecust=$(echo $BASE_PKG_NAME|sed 's/-riq-agent//')
+        cp ${basecust}.sh ${FRIENDLY_NAME}.sh
+        echo "Current content of ${FRIENDLY_NAME}.sh"
+        cat ${FRIENDLY_NAME}.sh
+        echo "Update env value of ${basecust} to ${FRIENDLY_NAME}"
+        sed -i "s/$basecust/$FRIENDLY_NAME/g" $WORKSPACE/${LOGPARSERMODULE}/${FRIENDLY_NAME}.sh
+    
+        echo ''
+        echo 'Update env tenantId'
+        sed -i 's/riq_tenantId=.*/riq_tenantId="'"$TENANT_UUID"'"/' $WORKSPACE/${LOGPARSERMODULE}/${FRIENDLY_NAME}.sh
+        cat ${FRIENDLY_NAME}.sh
+	
+	if [ "$MASTER_NAMESPACE" = "stage01" ]
+        then
+        echo 'Update env product_endpoint_uri'
+	  sed -i 's#export product_endpoint_uri=.*#export product_endpoint_uri="'"https://stage01.api.releaseiq.io/app-be/"'"#' $WORKSPACE/${LOGPARSERMODULE}/${FRIENDLY_NAME}.sh
+        fi
+        
+	if [ "$MASTER_NAMESPACE" = "prod01" ]
+        then
+        echo 'Update env product_endpoint_uri'
+	sed -i 's#export product_endpoint_uri=.*#export product_endpoint_uri="'"https://prod01.api.releaseiq.io/app-be/"'"#' $WORKSPACE/${LOGPARSERMODULE}/${FRIENDLY_NAME}.sh
+        fi
+
+	echo ''
+        echo 'Update env S3_BUCKET_NAME'
+        if [ "$S3_BUCKET_NAME" != "" ]
+        then
+        echo 'Update s3 Bucket with input value'
+            sed -i "s#s3_bucket_name=.*#s3_bucket_name=\\"$S3_BUCKET_NAME\\"#" $WORKSPACE/${LOGPARSERMODULE}/${FRIENDLY_NAME}.sh
+        fi
+        
+        cat $WORKSPACE/${LOGPARSERMODULE}/${FRIENDLY_NAME}.sh
+
+        echo ''
+        echo ''
+        echo ' Push changes and branch to remote repo'
+        echo '======================================='
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git config --global user.email "prabhu.k@releaseiq.io"
+        git config --global user.name "Prabhu Kasisekar"
+        git add .
+        git commit -m "Push file from $BR branch to master"
+        git push origin $BR:master
+        pwd
+        cd $WORKSPACE
+        rm -rf $ONBOARDING
+        '''
+        
+        echo 'Checkout DEVOPS repo'
+        echo '====================='
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${DEVOPSREPO}.git"]]])
+        
+        container(name: 'awscli') {
+        withAWS(region:'us-east-1',credentials:'aws'){
+          sh '''
+          mkdir $ONBOARDING
+          aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE $WORKSPACE/$ONBOARDING/
+          chmod -R 777 $ONBOARDING/$RESOURCE
+          chown -R 1000:1000 $ONBOARDING
+          ls -l $WORKSPACE/$ONBOARDING/
+          sed -i 's/^/export /;/=/!d' $WORKSPACE/$ONBOARDING/$RESOURCE
+          '''
+            }
+        }
+        
+        sh '''
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        BR="${FRIENDLY_NAME}"
+        echo 'Figure out branch already exists $BR'
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git ls-remote --heads origin $BR
+        wc=$(git ls-remote --heads origin $BR |wc |awk '{print$1}')
+        echo 'Value of wc is $wc'
+        if [ $wc -ne 0 ]
+        then
+            echo "Branch name $BR already exists, deleting it"
+            git push -d origin $BR
+            echo " Creating fresh branch $BR"
+            git checkout -b $BR
+        else
+            echo "Branch name $BR does not exists."
+            git checkout -b $BR
+        fi
+        git branch
+
+        echo ''
+        echo 'Add New Customer to customer list file for values.yaml copy to s3 as UPDATE_HELM_PKG Job'
+        echo '========================================================================================'
+        cd $WORKSPACE/$DEVOPS_HELM_PKG_DIR
+        echo "$FRIENDLY_NAME" >> $DEVOPS_HELM_PKG_CUSTOMER_LIST
+        cat $DEVOPS_HELM_PKG_CUSTOMER_LIST
+        
+        pwd
+        cd $WORKSPACE
+        rm -rf $ONBOARDING
+        echo ' Push changes and branch to remote repo'
+        echo '======================================='
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git config --global user.email "prabhu.k@releaseiq.io"
+        git config --global user.name "Prabhu Kasisekar"
+        git add -u
+        git commit -m "Push file from $BR branch to master"
+        git push origin $BR:master
+
+	      cd $WORKSPACE
+	      echo "{\\"FRIENDLY_NAME\\": \\"$FRIENDLY_NAME\\"}" > artifact.json
+	      ls -l artifact.json
+	      cat artifact.json
+       '''
+        archiveArtifacts 'artifact.json'
+      }
+    }
+  }
+}

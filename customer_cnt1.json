@@ -1,0 +1,11 @@
+ {
+            "Comment": "CREATE ",
+            "Changes": [{
+            "Action": "CREATE",
+                        "ResourceRecordSet": {
+                                    "Name": "VALIDATION_NAME1",
+                                    "Type": "CNAME",
+                                    "TTL": 300,
+                                 "ResourceRecords": [{ "Value": "VALIDATION_VALUE1"}]
+}}]
+}
