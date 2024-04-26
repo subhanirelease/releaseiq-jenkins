@@ -1,0 +1,113 @@
+pipeline {
+  environment {
+    EMAIL_TO = 'devops-team@releaseiq.io'
+    module="enterprise-management"
+    podname="riq-admin-be"
+    git_tag="${env.JOB_NAME}-${env.BUILD_NUMBER}"
+    BUCKET='s3://riq-staging/customer_onboarding'
+    RESOURCE='resource.txt'
+    ADMIN_BE_BUILD='ga'
+    PRODUCT_BE_BUILD='ga'
+    CLOUD_SYNC_BUILD='ga'
+    NOTIFICATION_BUILD='ga'
+    LOGPARSER_BUILD='ga'
+    ADMIN_UI_BUILD='ga'
+    PRODUCT_UI_BUILD='ga'
+  }
+  
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: helm
+      spec:
+        containers:
+        - name: awscli
+          image: docker.io/mesosphere/aws-cli:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          - cat
+          tty: true
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+  
+    stages {
+        
+    stage('Deploy Components') {
+      steps {
+          buildName "$FRIENDLY_NAME"
+          container(name: 'awscli') {
+              withAWS(region:'us-east-1',credentials:'aws'){
+              sh '''
+              aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE .
+              . $RESOURCE
+
+              echo NAMESPACE=${FRIENDLY_NAME}-riq-cloud > $WORKSPACE/var.properties
+              echo ENV_NAME=$FRIENDLY_NAME >> $WORKSPACE/var.properties
+              cat $WORKSPACE/var.properties
+              '''
+              script {
+            def props = readProperties file: 'var.properties'
+
+            env.NAMESPACE = props.NAMESPACE
+            env.ENV_NAME = props.ENV_NAME
+            sh '''date
+            echo value of NAMESPACE is "$NAMESPACE"
+            echo value of ENV_NAME is "$ENV_NAME"
+            '''
+            build job: 'admin_be_multi_deploy', parameters: [
+                [$class: 'StringParameterValue', name: 'BRANCH_NAME', value: "master"],
+                [$class: 'StringParameterValue', name: 'NAMESPACE', value: "$NAMESPACE"],
+                [$class: 'StringParameterValue', name: 'BUILD', value: "$ADMIN_BE_BUILD"],
+                [$class: 'StringParameterValue', name: 'ENV_NAME', value: "$ENV_NAME"]
+                ], propagate: true, wait: true
+                
+            build job: 'product_be_multi_deploy', parameters: [
+                [$class: 'StringParameterValue', name: 'BRANCH_NAME', value: "master"],
+                [$class: 'StringParameterValue', name: 'NAMESPACE', value: "$NAMESPACE"],
+                [$class: 'StringParameterValue', name: 'BUILD', value: "$PRODUCT_BE_BUILD"],
+                [$class: 'StringParameterValue', name: 'ENV_NAME', value: "$ENV_NAME"]
+                ], propagate: true, wait: true
+                
+            build job: 'cloudsync_multi_deploy', parameters: [
+                [$class: 'StringParameterValue', name: 'BRANCH_NAME', value: "master"],
+                [$class: 'StringParameterValue', name: 'NAMESPACE', value: "$NAMESPACE"],
+                [$class: 'StringParameterValue', name: 'BUILD', value: "$CLOUD_SYNC_BUILD"],
+                [$class: 'StringParameterValue', name: 'ENV_NAME', value: "$ENV_NAME"]
+                ], propagate: true, wait: true
+                
+            build job: 'riq_notification_multi_deploy', parameters: [
+                [$class: 'StringParameterValue', name: 'BRANCH_NAME', value: "master"],
+                [$class: 'StringParameterValue', name: 'NAMESPACE', value: "$NAMESPACE"],
+                [$class: 'StringParameterValue', name: 'BUILD', value: "$NOTIFICATION_BUILD"],
+                [$class: 'StringParameterValue', name: 'ENV_NAME', value: "$ENV_NAME"]
+                ], propagate: true, wait: true
+                
+            build job: 'riq_log_parser_multi_deploy', parameters: [
+                [$class: 'StringParameterValue', name: 'BRANCH_NAME', value: "master"],
+                [$class: 'StringParameterValue', name: 'BUILD', value: "$LOGPARSER_BUILD"],
+                [$class: 'StringParameterValue', name: 'ENV_NAME', value: "$ENV_NAME"]
+                ], propagate: true, wait: true
+                
+            build job: 'product_ui_onboarding_bld_dply_unified', parameters: [
+                [$class: 'StringParameterValue', name: 'BRANCH_NAME', value: "master"],
+                [$class: 'StringParameterValue', name: 'NAMESPACE', value: "$NAMESPACE"],
+                [$class: 'StringParameterValue', name: 'TAG', value: "$PRODUCT_UI_BUILD"],
+                [$class: 'StringParameterValue', name: 'ENV_NAME', value: "$ENV_NAME"]
+                ], propagate: true, wait: true
+            }
+         
+        }
+      }
+    }
+  }
+}
+    
+}

@@ -1,0 +1,122 @@
+pipeline {
+  environment {
+    EMAIL_TO = 'devops-team@releaseiq.io,platform-team@releaseiq.io'  
+    module="riq-log-parser"
+    app_name="$ENV_NAME_log_parser"
+    AUTOMATION_DIR='deployment'
+    GIT_AUTH = credentials('github')
+  }
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: kaniko
+      spec:
+        containers:
+        - name: awscli
+          image: docker.io/mesosphere/aws-cli:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:debug-539ddefcae3fd6b411a95982a830d987f4214251
+          imagePullPolicy: IfNotPresent
+          command:
+          - cat
+          tty: true
+          volumeMounts:
+            - name: docker-config
+              mountPath: /kaniko/.docker
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+  stages {
+    stage('checkout') {
+      tools {maven 'mvn'}
+      steps {
+        buildName "${BRANCH_NAME}-${ENV_NAME}-${BUILD}-dply"
+        checkout([$class: 'GitSCM', branches: [[name: '*/$BRANCH_NAME']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/riq_log_parser.git']]])
+        sh '''
+      cd $AUTOMATION_DIR
+      sed -i "s|rhea.api.releaseiq.io|stage01.api01.releaseiq.io|" $ENV_NAME.sh
+      echo "_____________________________________"
+      echo "template push to github repo"
+      git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+      git config --global user.email "prabhu.k@releaseiq.io"
+      git config --global user.name "Prabhu Kasisekar"
+      git add $WORKSPACE/$AUTOMATION_DIR/$ENV_NAME.sh
+      git commit -m "Push file from master branch"
+      git push --force origin HEAD:master
+      '''
+      }
+    }
+    stage("lamda function ") {
+          steps {
+              container(name: 'awscli'){
+            withAWS(region:'us-west-2',credentials:'aws') {
+                        script {
+						def envn
+							envn = ENV_NAME.split(',')
+							for (txt in envn) {
+                            sh '''
+							echo CUSTOMER NAME is '''+txt+'''
+                            app_name=$(aws lambda get-function --function-name '''+txt+'''_log_parser) || true
+                            if [ "$app_name" != "" ]
+                            then
+                                echo UPDATE FUNCTION
+                                . ./deployment/'''+txt+'''.sh
+                                 aws lambda update-function-code --function-name "'''+txt+'''_log_parser" --s3-bucket release-iq-common --s3-key lambda/v1/riq-log-parser_$BUILD.jar 
+                                sleep 15;
+                                 aws lambda update-function-configuration --function-name "${ENV_NAME}_log_parser"  --environment Variables={exception_separator="$exception_separator",http_header_id_key=$http_header_id_key,http_header_role_key=$http_header_role_key,log_patterns="$log_patterns",log_window_after=$log_window_after,log_window_before=$log_window_before,product_endpoint_uri=$product_endpoint_uri,product_original_path_get=$product_original_path_get,product_pruned_path_post=$product_pruned_path_post,riq_tenantId=$riq_tenantId,s3_bucket_name=$s3_bucket_name,s3_endpoint_uri=$s3_endpoint_uri,health_msggrpid=$health_msggrpid,health_queue=$health_queue,product_pruned_path_post_v2=$product_pruned_path_post_v2} 
+                            else 
+                            . ./deployment/'''+txt+'''.sh
+                                echo CREATING NEW FUNCTION
+                              aws lambda create-function --function-name '''+txt+'''_log_parser \
+                             --runtime java8 \
+                             --role arn:aws:iam::641518622681:role/riq-lambda \
+                             --handler io.releaseiq.logparser.parser.LogParserLambda::handleRequest \
+                             --description "Lambda function for prune the failure logs" \
+                             --timeout "60" \
+                             --memory-size "768" \
+                             --code publish="true" \
+                             --environment Variables={exception_separator="$exception_separator",http_header_id_key=$http_header_id_key,http_header_role_key=$http_header_role_key,log_patterns="$log_patterns",log_window_after=$log_window_after,log_window_before=$log_window_before,product_endpoint_uri=$product_endpoint_uri,product_original_path_get=$product_original_path_get,product_pruned_path_post=$product_pruned_path_post,riq_tenantId=$riq_tenantId,s3_bucket_name=$s3_bucket_name,s3_endpoint_uri=$s3_endpoint_uri,health_msggrpid=$health_msggrpid,health_queue=$health_queue,product_pruned_path_post_v2=$product_pruned_path_post_v2} \
+                             --code S3Bucket=release-iq-common,S3Key=lambda/v1/riq-log-parser_$BUILD.jar
+                           
+                            cd deployment
+                            cat rule.json
+							
+							sed -i "s|FunctionName|'''+txt+'''_log_parser|g" rule.json
+                            aws events put-rule --name '''+txt+'''_log_parser --schedule-expression 'rate(5 minutes)'
+							sleep 45;
+							aws lambda add-permission --function-name '''+txt+'''_log_parser --statement-id Id1 --action 'lambda:InvokeFunction' --principal events.amazonaws.com --source-arn arn:aws:events:us-west-2:641518622681:rule/'''+txt+'''_log_parser
+                            aws events put-targets --rule '''+txt+'''_log_parser --targets file://rule.json
+                            fi
+							'''
+                            
+                            //  --zip-file fileb://s3://release-iq-common/lambda/v1/riq-log-parser-0.0.1-SNAPSHOT.jar  \
+                        }
+                    }
+                }
+            }
+    }       
+  }
+  
+  }
+   post {
+         success {  
+             echo "${env.JOB_NAME} successful to $ENV_NAME. Sending email"
+             mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: 'devops', mimeType: 'text/html', replyTo: '', subject: "Build Success: Project name -> ${env.JOB_NAME} in ${env.ENV_NAME}", to: "${EMAIL_TO}";  
+         }  
+         failure {
+             echo "${env.JOB_NAME} failed to $env.ENV_NAME. Sending email"
+             mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: '', mimeType: 'text/html', replyTo: '', subject: "Build Failed: Project name -> ${env.JOB_NAME} in ${env.ENV_NAME}", to: "${EMAIL_TO}";  
+         }  
+     }
+}

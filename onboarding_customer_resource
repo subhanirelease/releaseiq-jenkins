@@ -1,0 +1,251 @@
+ pipeline {
+  environment {
+    AUTOMATION_DIR='build/automation'
+    App="app.txt"
+    unique_Id = UUID.randomUUID().toString()
+  }
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: awscli
+      spec:
+        containers:
+        - name: awscli
+          image: amazon/aws-cli
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: curl
+          image: docker.io/gempesaw/curl-jq:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+    stages{
+	 
+      stage('AWS SERVICES') {
+          steps {
+		   
+              script {
+			checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/riq-jenkins-pipeline-jobs.git']]])
+               sh '''       	 
+        echo "$ID"
+		cd $AUTOMATION_DIR
+		ls -l
+		cat token.json
+		token=$( curl --header 'Content-type: application/json' --request POST -d @./token1.json https://prod.api.releaseiq.io/cm/api/authenticate-client | cut -d '"' -f6)
+		echo $token
+		echo 'token="'"$token"'"' > $WORKSPACE/token.txt
+		cat $WORKSPACE/token.txt
+	    curl -H 'Accept: application/json' -H "Authorization: Bearer ${token}" -X PUT  "http://prod.api.releaseiq.io/cm/approvenewcustomer/$ID/1"
+        curl -H 'Accept: application/json' -H "Authorization: Bearer ${token}" https://prod.api.releaseiq.io/cm/getnewcustomer/$ID/1 | tee sample.txt
+        cat $WORKSPACE/$AUTOMATION_DIR/sample.txt
+        cat $WORKSPACE/$AUTOMATION_DIR/sample.txt | awk ' BEGIN {FS=":";RS=","};
+ {
+{print toupper($1), $2}
+}'| sed 's/{//g;s/}/ /;s/ /=/;s/"//g;s/^SIZE.*//;s/CREATED_ON.*//;s/UPDATED_ON.*//;s/ADDRESS1=/ADDRESS1="/;s/\\(ADDRESS1.*\\)/\\1"/;s/ACCOUNTNAME=/ACCOUNTNAME="/;s/\\(ACCOUNTNAME.*\\)/\\1"/;s/CUSTOMERNAME=/CUSTOMERNAME="/;s/\\(CUSTOMERNAME.*\\)/\\1"/;s/STATE=/STATE="/;s/\\(STATE.*\\)/\\1"/;s/COUNTRY=/COUNTRY="/;s/\\(COUNTRY.*\\)/\\1"/;s/CITY=/CITY="/;s/\\(CITY.*\\)/\\1"/;s/FIRSTNAME=/FIRSTNAME="/;s/\\(FIRSTNAME.*\\)/\\1"/;s/LASTNAME=/LASTNAME="/;s/\\(LASTNAME.*\\)/\\1"/;' > values
+        cat values
+        . ./values
+        echo "$CUSTOMERNAME"
+		export PRODUCTNAME="$PRODUCTNAME" > sample3.txt
+		cat sample3.txt
+		export ACCOUNT_NAME="$ACCOUNTNAME" 
+		echo 'ACCOUNT_NAME="'"$ACCOUNT_NAME"'"' > $WORKSPACE/sample2.txt
+		echo  'CUSTOMER_NAME1="'"$CUSTOMERNAME"'"' >> $WORKSPACE/sample2.txt
+		cat $WORKSPACE/sample2.txt
+                echo  'PRODUCTNAME="'"$PRODUCTNAME"'"' > $WORKSPACE/values.txt
+                echo  'CUSTOMER_NAME="'"$CUSTOMERNAME"'"' >> $WORKSPACE/values.txt
+                echo 'CITY="'"$CITY"'"' >> $WORKSPACE/values.txt
+                echo 'ADDRESS1="'"$ADDRESS1"'"'  >> $WORKSPACE/values.txt
+                echo 'STATE="'"$STATE"'"' >> $WORKSPACE/values.txt
+                echo 'FIRSTNAME="'"$FIRSTNAME"'"' >> $WORKSPACE/values.txt
+                echo 'LASTNAME="'"$LASTNAME"'"'  >> $WORKSPACE/values.txt
+                echo 'COUNTRY="'"$COUNTRY"'"' >> $WORKSPACE/values.txt
+                echo 'ZIPPOSTALCODE="'"$ZIPPOSTALCODE"'"' >> $WORKSPACE/values.txt
+                echo 'CREATEDBY="'"$CREATEDBY"'"' >> $WORKSPACE/values.txt
+                echo 'UPDATEBY="'"$EMAIL"'"'  >> $WORKSPACE/values.txt
+                echo 'EMAIL="'"$EMAIL"'"' >> $WORKSPACE/values.txt
+                cat $WORKSPACE/values.txt
+				
+               '''
+			container(name: 'curl') {
+			sh '''
+			. $WORKSPACE/sample2.txt
+			. $WORKSPACE/token.txt
+			FRIENDLY_NAME=$(curl -H 'Accept: application/json' -H "Authorization: Bearer ${token}" -X GET API https://prod.api.releaseiq.io/cm/api/pool/resource?resourceType=AGENT)
+			echo $FRIENDLY_NAME > sample1.txt
+			FRIENDLY_NAME=$(sed 's/ //g;s/_//g;s/-//g;s#&##g;s/[/]//g;s/[.]//g;s/[~]//g;s/!//g;s/@//g;s/#//g;s/[$]//g;s/[%]//g;s/*//g;s/[{]//g;s/[}]//g;s/[(]//g;s/[)]//g;s/+//g;s/=//g;s/[;]//g;s/[:]//g;s/,//g;s/?//g;s/\"//g;s/>//g;s/<//g;s/[|]//g;s/[]]//g;s/[[]//g' sample1.txt)
+			echo 'FRIENDLY_NAME="'"$FRIENDLY_NAME"'"' >> $WORKSPACE/values.txt
+			cp $WORKSPACE/values.txt $WORKSPACE/customer_resource.txt
+			curl -H 'Accept: application/json' -H "Authorization: Bearer ${token}" -X PUT API https://prod.api.releaseiq.io/cm/enableenterprise/${FRIENDLY_NAME}
+			
+			'''
+			}
+			container(name: 'awscli') {
+            withAWS(region:'us-east-1',credentials:'aws'){
+            sh '''
+			. $WORKSPACE/values.txt
+			. $WORKSPACE/sample2.txt
+			. $WORKSPACE/customer_resource.txt
+			aws s3 cp s3://riq-staging/customer_onboarding/$FRIENDLY_NAME/resource.txt  $WORKSPACE/
+			echo  'PRODUCTNAME="'"$PRODUCTNAME"'"' >> $WORKSPACE/resource.txt
+                echo  'CUSTOMER_NAME="'"$CUSTOMERNAME"'"' >> $WORKSPACE/resource.txt
+				echo  'FRIENDLY_NAME="'"$FRIENDLY_NAME"'"' >> $WORKSPACE/resource.txt
+                echo 'CITY="'"$CITY"'"' >> $WORKSPACE/resource.txt
+                echo 'ADDRESS1="'"$ADDRESS1"'"'  >> $WORKSPACE/resource.txt
+                echo 'STATE="'"$STATE"'"' >> $WORKSPACE/resource.txt
+                echo 'FIRSTNAME="'"$FIRSTNAME"'"' >> $WORKSPACE/resource.txt
+                echo 'LASTNAME="'"$LASTNAME"'"'  >> $WORKSPACE/resource.txt
+                echo 'COUNTRY="'"$COUNTRY"'"' >> $WORKSPACE/resource.txt
+                echo 'ZIPPOSTALCODE="'"$ZIPPOSTALCODE"'"' >> $WORKSPACE/resource.txt
+                echo 'CREATEDBY="'"$CREATEDBY"'"' >> $WORKSPACE/resource.txt
+                echo 'UPDATEBY="'"$EMAIL"'"'  >> $WORKSPACE/resource.txt
+                echo 'EMAIL="'"$EMAIL"'"' >> $WORKSPACE/resource.txt
+			
+			'''
+			}
+			}
+			
+			
+			
+			container(name: 'awscli'){
+            withAWS(region:'us-west-2',credentials:'aws') {
+                        script {
+			sh '''
+			. $WORKSPACE/resource.txt
+			. $WORKSPACE/sample2.txt
+			. $WORKSPACE/customer_resource.txt
+			 cd $AUTOMATION_DIR
+			 ls -l
+			 CLIENT_NAME="$FRIENDLY_NAME"
+			 sed -i "s|ACCOUNT_NAME|${ACCOUNT_NAME}|g" cognito8.json
+			 cat cognito8.json
+			    CLIENT_NAME="$FRIENDLY_NAME"
+			    sed -i "s|ACCOUNT_NAME|pool|g" cognito8.json
+                aws cognito-idp create-user-pool --pool-name $FRIENDLY_NAME --auto-verified-attributes "email" --username-attributes "email" --username-configuration CaseSensitive=false --sms-verification-message "Your verification code is {####}." --email-verification-message "<p>Hello,</p>\n<p>&nbsp; We have received a request to reset your password.</p>\n\n<p>&nbsp; Please use verification code {####} to reset your password.</p>\n\n<p>Sincerely,\n  <br/>  \nSupport Team - ReleaseIq.io</p>\n" --email-verification-subject "Reset Password - Verification code" --verification-message-template="file://cognito1.json"  --sms-authentication-message "Your authentication code is {####}. " --mfa-configuration "OFF" --email-configuration SourceArn="arn:aws:ses:us-west-2:641518622681:identity/support@releaseiq.io",ReplyToEmailAddress="support@releaseiq.io",EmailSendingAccount="DEVELOPER",From="support@releaseiq.io" --admin-create-user-config="file://cognito8.json" --schema Name="email",AttributeDataType="String",DeveloperOnlyAttribute="false",Mutable="true",Required="true"  --account-recovery-setting RecoveryMechanisms="[{Priority="1",Name="verified_email"}]" | tee automation.txt
+                cat automation.txt
+                COGNITO_POOL_ID=$( grep "Id" automation.txt | awk '{print$2}')
+                echo "user pool Id $COGNITO_POOL_ID"
+                COGNITO_POOL_ID=$(echo  $COGNITO_POOL_ID | sed 's/"//g')
+                COGNITO_POOL_ID=$(echo $COGNITO_POOL_ID | sed 's/,//g')
+                echo  'COGNITO_POOL_ID="'"$COGNITO_POOL_ID"'"' >> $WORKSPACE/resource.txt
+			    cat $WORKSPACE/resource.txt
+                aws cognito-idp create-user-pool-client  --region us-west-2 --user-pool-id $COGNITO_POOL_ID  --client-name $CLIENT_NAME --no-generate-secret --explicit-auth-flows "ALLOW_ADMIN_USER_PASSWORD_AUTH" "ALLOW_USER_SRP_AUTH" "ALLOW_REFRESH_TOKEN_AUTH" --prevent-user-existence-errors "ENABLED" | tee automation.txt
+                COGNITO_CLIENT_ID=$(grep "ClientId" automation.txt | awk '{print$2}')
+                echo "app client Id $COGNITO_CLIENT_ID"
+                COGNITO_CLIENT_ID=$(echo  $COGNITO_CLIENT_ID | sed 's/"//g')
+                COGNITO_CLIENT_ID=$(echo $COGNITO_CLIENT_ID | sed 's/,//g')
+                echo 'COGNITO_CLIENT_ID="'"$COGNITO_CLIENT_ID"'"' >> $WORKSPACE/resource.txt
+		export DB=POSTGRES
+		echo 'DB="'"$DB"'"' >> $WORKSPACE/resource.txt
+			    cat $WORKSPACE/resource.txt
+                aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_Admin --description "Role_Admin"
+                aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_Developer --description "Role_Developer"
+                aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_Executive --description "Role_Executive"
+                aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_DevOps --description "Role_DevOps"
+                aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_Manager --description "Role_Manager"
+                aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_RIQAdmin --description "Role_RIQAdmin"
+				aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name $TENANT_UUID --description "TENANT_UUID"			
+			    aws cognito-idp create-group --user-pool-id $COGNITO_POOL_ID --group-name Role_QA --description "Role_QA"
+                echo "Created Cognito Pool"
+			    cat $WORKSPACE/resource.txt
+				
+				aws s3 cp $WORKSPACE/resource.txt s3://riq-staging/customer_onboarding/$FRIENDLY_NAME/
+                echo FRIENDLY_NAME="$FRIENDLY_NAME" > $WORKSPACE/var.properties
+				cd $WORKSPACE
+                	    echo "{\\"FRIENDLY_NAME\\": \\"$FRIENDLY_NAME\\"}" > artifact.json
+			    ls -l artifact.json
+			    cat artifact.json
+			 '''
+			 archiveArtifacts 'artifact.json'
+                        }
+            }    
+              }
+			  container(name: 'curl') {
+			sh '''
+			cd $AUTOMATION_DIR
+			. $WORKSPACE/sample2.txt
+			. $WORKSPACE/token.txt
+			. $WORKSPACE/resource.txt
+			sed -i "s|TENANT_ID|${TENANT_UUID}|" customer4.json
+			sed -i "s|CustomerName|${CUSTOMER_NAME1}|" customer4.json
+			sed -i "s|POOL_ID|${COGNITO_POOL_ID}|" customer4.json
+			sed -i "s|ADMIN_EMAIL|${EMAIL}|" customer4.json
+			sed -i "s|test16|${FRIENDLY_NAME}|" customer4.json
+			sed -i "s|AccountName|${ACCOUNT_NAME}|" customer4.json
+			sed -i "s|mountroad|${ADDRESS1}|" customer4.json
+			sed -i "s|chennai|${CITY}|" customer4.json
+			sed -i "s|TN|${STATE}|" customer4.json
+			sed -i "s|IN|${COUNTRY}|" customer4.json
+			sed -i "s|522100|${ZIPPOSTALCODE}|" customer4.json
+			sed -i "s|vkadiyala@releaseiq.io|${EMAIL}|" customer4.json
+			cat customer4.json
+			STATUS=$(curl --header 'Content-type: application/json' -H "Authorization: Bearer ${token}" --request PUT -d @./customer4.json -o automation.txt -w '%{http_code}' https://prod.api.releaseiq.io/cm/updateenterprisedetails)
+			if [ $STATUS -eq 200 ]; then
+			echo "Got 200! All done!"
+			break
+			else
+			echo "Got $STATUS :( Not done yet..."
+			fi
+			'''
+			}
+			
+			
+			script {
+			def props = readProperties file: 'var.properties'
+			env.FRIENDLY_NAME = props.FRIENDLY_NAME	
+			buildName "$FRIENDLY_NAME"
+			}
+			
+		}
+		}
+	}
+	 
+	stage ('SVC_UPDATE') {
+	steps {
+	script {
+	def props = readProperties file: 'var.properties'
+	env.FRIENDLY_NAME = props.FRIENDLY_NAME
+			
+	build job: 'rhea_mt_svc_config_update', parameters: [
+    [$class: 'StringParameterValue', name: 'FRIENDLY_NAME', value: "$FRIENDLY_NAME"]
+    ], propagate: true, wait: true
+}
+}
+}
+
+stage ('ADMIN_EMAIL_UPDATE') {
+	steps {
+	script {
+	def props = readProperties file: 'var.properties'
+	env.FRIENDLY_NAME = props.FRIENDLY_NAME
+			
+	build job: 'rhea_mt_admin_email', parameters: [
+    [$class: 'StringParameterValue', name: 'FRIENDLY_NAME', value: "$FRIENDLY_NAME"]
+    ], propagate: true, wait: true
+}
+}
+}
+
+ stage ('rhea_resource_pool') {
+	steps {
+	script {
+			
+	build job: 'rhea_mt_create_resource', propagate: true, wait: true
+}
+}
+}
+	
+}
+}

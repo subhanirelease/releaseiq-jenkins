@@ -1,0 +1,452 @@
+pipeline {
+  environment {
+        EMAIL_TO = 'devops-team@releaseiq.io,platform-team@releaseiq.io'
+        MASTER_NAMESPACE='prod01'
+        AGENT_CONFIGS='agent_configs'
+        AWS='aws'
+        PKG='pkg'
+        RIQAGENT='riq-agent'
+        BASE_PKG_COPY_FROM='riq-master-agent'
+        BASE_PKG_NAME=''
+        BUCKET="s3://riq-staging/customer_onboarding"
+        ONBOARDING="onboarding"
+        RESOURCE="resource.txt"
+        CHARTS='Chart.yaml'
+        CHARTSDIR='charts'
+        WFREPO='svc_workflowexecutor'
+        WFMODULE='deployment/helm/workflow'
+        WFCHARTS='charts/workflow'
+        WORKFLOW='workflow'
+        OCREPO='svc_orchestrator'
+        OCMODULE='deployment/helm/orchestrator'
+        OCCHARTS='charts/orchestrator'
+        ORCHESTRATOR='orchestrator'
+        RSREPO='svc_orchestrator_resilience'
+        RSMODULE='deployment/helm/resilience'
+        RSCHARTS='charts/resilience'
+        RESILIENCE='resilience'
+        PBREPO='svc_riqpubsub'
+        PBMODULE='deployment/helm/pubsub'
+        PBCHARTS='charts/pubsub'
+        PUBSUB='pubsub'
+        LRREPO='svc_listener'
+        LRMODULE='deployment/helm/listener'
+        LRCHARTS='charts/listener'
+        LISTENER='listener'
+        APPPROPERTIES='files/application.properties'
+        SQL='sql'
+        VALUES='values.yaml'
+        TEMPLATES='templates'
+        AWSSECRET='awssecret.yaml'
+        //cron='cron-secret.yaml'
+        HOOK='hook-aws-ecr.yaml'
+        LOCAL='local'
+        FLUENTD='fluentd-riq'
+        FLUENTD_S3='fluentd'
+        FLUENTD_S3_FILE='fluentd.yaml'
+        JENKINS='jenkins'
+	SCRIPTS='scripts'	
+        JENKINS_SH='jenkins.sh'
+        GIT_AUTH =credentials('github')
+        WORKFLOW_BUILD_NO='ga'
+        ORCHESTRATOR_BUILD_NO='ga'
+        RESILIENCE_BUILD_NO='ga'
+        PUBSUB_BUILD_NO='ga'
+        LISTENER_BUILD_NO='ga'
+  }
+  
+agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: helm
+      spec:
+        containers:
+        - name: helm
+          image: docker.io/dtzar/helm-kubectl:3.1.2
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: awscli
+          image: docker.io/mesosphere/aws-cli:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+  
+    stages {
+        
+    stage('Package Creation') {
+        steps {
+            container(name: 'awscli') {
+              withAWS(region:'us-east-1',credentials:'aws'){
+        echo "checkout Base package repo $BASE_PKG_COPY_FROM"
+        echo '==============================================='
+        //For new customer - copy already existing customer latest package and update values.yaml and application.properties file from repo
+        checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${BASE_PKG_COPY_FROM}.git"]]])
+        
+        container(name: 'awscli') {
+        withAWS(region:'us-east-1',credentials:'aws'){
+          sh '''
+          set +x
+          pwd
+          ls
+          mkdir $ONBOARDING
+          aws s3 cp $BUCKET/$FRIENDLY_NAME/$RESOURCE $WORKSPACE/$ONBOARDING/
+          chmod -R 777 $ONBOARDING/$RESOURCE
+          chown -R 1000:1000 $ONBOARDING
+          ls -l $WORKSPACE/$ONBOARDING/
+          sed -i 's/^/export /;/=/!d' $WORKSPACE/$ONBOARDING/$RESOURCE
+          . $WORKSPACE/$ONBOARDING/$RESOURCE
+          echo Lets do some testing - variable ENTERPRISE_KEY "${ENTERPRISE_KEY}"
+        
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        echo "Base repo $BASE_PKG_COPY_FROM checkout complete"
+        ls -l #list current directory contents
+        ls -l local/
+        if [ -d "$WORKSPACE/$PKG" ]
+        then
+            rm -rf $WORKSPACE/$PKG
+            mkdir $WORKSPACE/$PKG
+            ls -l
+        else 
+            echo "Creating Package dir $WORKSPACE/$PKG"
+            mkdir $WORKSPACE/$PKG
+            ls -l
+        fi
+        
+        if [ "$BASE_PKG_NAME" == "" ]
+        then
+            echo 'Setting base package name'
+            ls -l $WORKSPACE/local
+            BASE_PKG_NAME=$(ls -1 $WORKSPACE/local | tail -1 | awk '{print $NF}')
+            echo "Latest package $BASE_PKG_NAME can be used as Base package"
+            ls -l local/$BASE_PKG_NAME
+            echo 'USING LATEST PKG AS BASE TO CREATE NEW PACKAGE'
+        else
+            echo "Job input to use latest package is $BASE_PKG_NAME"
+            ls -l local/$BASE_PKG_NAME
+        fi
+        echo ''
+        echo 'Copy base package to create new package'
+        echo '======================================='
+        cp -p local/$BASE_PKG_NAME $WORKSPACE/$PKG
+        cd $WORKSPACE/$PKG
+        ls -l 
+        tar -xvf $BASE_PKG_NAME
+        ls
+        ls -l $WORKSPACE/$PKG/$RIQAGENT/$VALUES 
+        
+        echo ''
+        echo ''
+        echo "Update package version in $WORKSPACE/$PKG/$RIQAGENT/$CHARTS file"
+        echo '========================================================================'
+         v=$(cat $WORKSPACE/$PKG/$RIQAGENT/$CHARTS | grep version | awk '{print $2}')
+        echo "current version is $v"
+        echo '=========================='
+        vnew="${v%.*}.$((${v##*.}+1))"
+        echo NEWVERSION=$vnew > $WORKSPACE/version.properties
+        echo '==================='
+        cat $WORKSPACE/version.properties
+        echo "Updated verion $vnew"
+        sed -i "s/version: *.*.*/version: $vnew/" $WORKSPACE/$PKG/$RIQAGENT/$CHARTS
+        cat $WORKSPACE/$PKG/$RIQAGENT/$CHARTS
+        echo VERSION=$vnew > $WORKSPACE/version.properties
+        echo CUSTOMER_NAME=$FRIENDLY_NAME >> $WORKSPACE/version.properties
+        cat $WORKSPACE/version.properties
+
+        echo ''
+        echo ''
+        echo "Update riq-agent/values.yaml tenantId"
+        echo '======================================'
+        ls -l $WORKSPACE/$PKG/$RIQAGENT/$VALUES
+        cat  $WORKSPACE/$PKG/$RIQAGENT/$VALUES | grep riq_agent.tenantId:
+        echo "New Customer TenantID is $TENANT_UUID"
+        sed -i "s/riq_agent.tenantId:.*/riq_agent.tenantId: $TENANT_UUID/" $WORKSPACE/$PKG/$RIQAGENT/$VALUES
+        echo ''
+        cat $WORKSPACE/$PKG/$RIQAGENT/$VALUES | grep tenantId
+        echo 'Copy MySQL values file to s3 bucket'
+        echo '-----------------------------------'
+        aws s3 cp  $WORKSPACE/$PKG/$RIQAGENT/$VALUES $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$SQL/
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$SQL/
+
+	echo ''
+        echo 'Copy Fluentd values file to s3 bucket'
+        echo '====================================='
+        aws s3 cp $WORKSPACE/$PKG/$RIQAGENT/$CHARTSDIR/$FLUENTD/$TEMPLATES/$FLUENTD_S3_FILE $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$FLUENTD_S3/$FLUENTD_S3_FILE
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$FLUENTD_S3/
+
+        echo ''
+        echo "Update riq-agent/templates/awssecret file"
+        echo '=========================================='
+            
+        PLACC="$(echo $USER_ACCESSKEY|base64 -d)"
+        echo "PLACC is $PLACC"
+
+        PLSEC="$(echo $USER_SECRETKEY|base64 -d)"
+        echo "PLSEC is $PLSEC"
+        
+        ls -l $WORKSPACE/$PKG/$RIQAGENT/$TEMPLATES/$AWSSECRET
+        cat  $WORKSPACE/$PKG/$RIQAGENT/$TEMPLATES/$AWSSECRET
+        sed -i "s#accesskey:.*#accesskey: ${USER_ACCESSKEY}#" $WORKSPACE/$PKG/$RIQAGENT/$TEMPLATES/$AWSSECRET
+        sed -i "s#secretkey:.*#secretkey: ${USER_SECRETKEY}#" $WORKSPACE/$PKG/$RIQAGENT/$TEMPLATES/$AWSSECRET
+        echo ''
+        cat $WORKSPACE/$PKG/$RIQAGENT/$TEMPLATES/$AWSSECRET | grep key
+        echo 'Copy awssecret file to s3 bucket'
+        echo '--------------------------------'
+        aws s3 cp  $WORKSPACE/$PKG/$RIQAGENT/$TEMPLATES/$AWSSECRET $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$AWS/
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$AWS/
+        
+        echo "Copy $HOOK file to customer s3 bucket"
+        echo '--------------------------------------'
+        aws s3 cp $WORKSPACE/$PKG/$RIQAGENT/$TEMPLATES/$HOOK $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$AWS/
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$AWS/
+
+		  echo "Update riq-agent/scripts/jenkins.sh file"	
+        echo '==========================================='	
+        ls -l $WORKSPACE/$PKG/$RIQAGENT/$SCRIPTS/$JENKINS_SH	
+        grep tenant_id= $WORKSPACE/$PKG/$RIQAGENT/$SCRIPTS/$JENKINS_SH	
+        sed -i "s/tenant_id=.*/tenant_id='$TENANT_UUID'/" $WORKSPACE/$PKG/$RIQAGENT/$SCRIPTS/$JENKINS_SH	
+        grep tenant_id= $WORKSPACE/$PKG/$RIQAGENT/$SCRIPTS/$JENKINS_SH	
+        grep releaseiq.io $WORKSPACE/$PKG/$RIQAGENT/$SCRIPTS/$JENKINS_SH	
+        sed -i "s#tenant_admin_be_url=.*#tenant_admin_be_url='https://$FRIENDLY_NAME.api.releaseiq.io/admin-be/admin/api/settings/ci-tools'#" $WORKSPACE/$PKG/$RIQAGENT/$SCRIPTS/$JENKINS_SH	
+        
+        if [ "$MASTER_NAMESPACE" = "prod01" ]
+        then
+        echo "Update admin_backend: baseurl value with $MASTER_NAMESPACE"
+	    sed -i "s#tenant_admin_be_url=.*#tenant_admin_be_url='https://prod01.api.releaseiq.io/admin-be/admin/api/settings/ci-tools'#" $WORKSPACE/$PKG/$RIQAGENT/$SCRIPTS/$JENKINS_SH
+        fi
+        
+        grep releaseiq.io $WORKSPACE/$PKG/$RIQAGENT/$SCRIPTS/$JENKINS_SH
+        echo "Copy $JENKINS_SH file customer to s3 bucket"
+        echo '--------------------------------------------'
+        aws s3 cp $WORKSPACE/$PKG/$RIQAGENT/$SCRIPTS/$JENKINS_SH $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$JENKINS/
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$JENKINS/
+        '''
+        script {
+            def props = readProperties file: 'version.properties'
+            env.CUSTOMER_NAME = props.CUSTOMER_NAME
+            env.VERSION = props.VERSION
+            buildName "${CUSTOMER_NAME}-new-pkg-${VERSION}-Blds-W:${WORKFLOW_BUILD_NO}-O:${ORCHESTRATOR_BUILD_NO}-R:${RESILIENCE_BUILD_NO}-P:${PUBSUB_BUILD_NO}-L:${LISTENER_BUILD_NO}"
+        }
+        
+        echo ''
+        echo ''
+        echo "Checkout WORKFLOW repo ${WFREPO}"
+        echo '======================================='
+        checkout([$class: 'GitSCM', branches: [[name: "*/master"]], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${WFREPO}.git"]]])
+        sh '''
+        pwd
+        ls -l $PKG $WORKSPACE/$ONBOARDING/$RESOURCE
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        
+        echo''
+        echo 'Copy values.yaml file of WORKFLOW'
+        echo '================================='
+        cat $WORKSPACE/$WFMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+        ls -l $WORKSPACE/$WFMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+        
+        echo''
+        echo 'Update the build tag in WORKFLOW values.yaml file'
+        echo '================================================='
+        if [ "$WORKFLOW_BUILD_NO" == "" ]
+        then
+            echo 'Provide build no to update WORKFLOW build tag'
+            exit 1
+        else
+            echo "Input provided to update WORKFLOW build tag is $WORKFLOW_BUILD_NO"
+            sed -i "s/tag:.*/tag: $WORKFLOW_BUILD_NO/" $WORKSPACE/$WFMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+            cat $WORKSPACE/$WFMODULE/${FRIENDLY_NAME}-riq-agent.yaml | grep tag:
+        fi
+        echo "Copy WORKFLOW ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to helm package"
+        cp -p $WORKSPACE/$WFMODULE/${FRIENDLY_NAME}-riq-agent.yaml $WORKSPACE/$PKG/$RIQAGENT/$WFCHARTS/$VALUES
+        ls -l $WORKSPACE/$PKG/$RIQAGENT/$WFCHARTS/$VALUES
+        echo "Copy WORKFLOW ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to S3"
+        aws s3 cp  $WORKSPACE/$WFMODULE/${FRIENDLY_NAME}-riq-agent.yaml $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$WORKFLOW/$VALUES
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$WORKFLOW/$VALUES
+        
+        '''
+        echo ''
+        echo ''
+        echo "Checkout ORCHESTRATOR repo ${OCREPO}"
+        echo '==========================================='
+        checkout([$class: 'GitSCM', branches: [[name: "*/master"]], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${OCREPO}.git"]]])
+        sh '''
+        pwd
+        ls -l
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        echo ''
+        echo 'Copy values.yaml file of ORCHESTRATOR'
+        echo '====================================='
+        cat $WORKSPACE/$OCMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+        ls -l $WORKSPACE/$OCMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+
+        
+        echo''
+        echo 'Update the build tag in ORCHESTRATOR values.yaml file'
+        echo '================================================='
+        if [ "$ORCHESTRATOR_BUILD_NO" == "" ]
+        then
+            echo 'Provide build no to update ORCHESTRATOR build tag'
+            exit 1
+        else
+            echo "Input provided to update ORCHESTRATOR build tag is $ORCHESTRATOR_BUILD_NO"
+            sed -i "s/tag:.*/tag: $ORCHESTRATOR_BUILD_NO/" $WORKSPACE/$OCMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+            cat $WORKSPACE/$OCMODULE/${FRIENDLY_NAME}-riq-agent.yaml | grep tag:
+        fi
+
+        echo "Copy ORCHESTRATOR ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to helm package"
+        cp -p $WORKSPACE/$OCMODULE/${FRIENDLY_NAME}-riq-agent.yaml $WORKSPACE/$PKG/$RIQAGENT/$OCCHARTS/$VALUES
+        ls -l $WORKSPACE/$PKG/$RIQAGENT/$OCCHARTS/$VALUES
+        echo "Copy ORCHESTRATOR ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to S3"
+        aws s3 cp  $WORKSPACE/$OCMODULE/${FRIENDLY_NAME}-riq-agent.yaml $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$ORCHESTRATOR/$VALUES
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$ORCHESTRATOR/$VALUES
+                
+        '''
+        
+        echo ''
+        echo ''
+        echo "Checkout RESILIENCE repo ${RSREPO}"
+        echo '======================================='
+        checkout([$class: 'GitSCM', branches: [[name: "*/master"]], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${RSREPO}.git"]]])
+        sh '''
+        pwd
+        ls -l
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        echo ''
+        echo 'Copy values.yaml file of RESILIENCE'
+        echo '==================================='
+        cat $WORKSPACE/$RSMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+        ls -l $WORKSPACE/$RSMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+        
+        echo''
+        echo 'Update the build tag in RESILIENCE values.yaml file'
+        echo '================================================='
+        if [ "$RESILIENCE_BUILD_NO" == "" ]
+        then
+            echo 'Provide build no to update RESILIENCE build tag'
+            exit 1
+        else
+            echo "Input provided to update RESILIENCE build tag is $RESILIENCE_BUILD_NO"
+            sed -i "s/tag:.*/tag: $RESILIENCE_BUILD_NO/" $WORKSPACE/$RSMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+            cat $WORKSPACE/$RSMODULE/${FRIENDLY_NAME}-riq-agent.yaml | grep tag:
+        fi
+
+        echo "Copy RESILIENCE ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to helm package"
+        cp -p $WORKSPACE/$RSMODULE/${FRIENDLY_NAME}-riq-agent.yaml $WORKSPACE/$PKG/$RIQAGENT/$RSCHARTS/$VALUES
+        ls -l $WORKSPACE/$PKG/$RIQAGENT/$RSCHARTS/$VALUES
+        echo "Copy RESILIENCE ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to S3"
+        aws s3 cp  $WORKSPACE/$RSMODULE/${FRIENDLY_NAME}-riq-agent.yaml $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$RESILIENCE/$VALUES
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$RESILIENCE/$VALUES
+
+        '''
+        
+        echo ''
+        echo ''
+        echo "Checkout PUBSUB repo ${PBREPO}"
+        echo '==================================='
+        checkout([$class: 'GitSCM', branches: [[name: "*/master"]], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${PBREPO}.git"]]])
+        sh '''
+        pwd
+        ls -l
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        echo ''
+        echo 'Copy values.yaml file of PUBSUB'
+        echo '==============================='
+        cat $WORKSPACE/$PBMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+        ls -l $WORKSPACE/$PBMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+        
+        echo''
+        echo 'Update the build tag in PUBSUB values.yaml file'
+        echo '================================================='
+        if [ "$PUBSUB_BUILD_NO" == "" ]
+        then
+            echo 'Provide build no to update PUBSUB build tag'
+            exit 1
+        else
+            echo "Input provided to update PUBSUB build tag is $PUBSUB_BUILD_NO"
+            sed -i "s/tag:.*/tag: $PUBSUB_BUILD_NO/" $WORKSPACE/$PBMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+            cat $WORKSPACE/$PBMODULE/${FRIENDLY_NAME}-riq-agent.yaml| grep tag:
+        fi
+
+        echo "Copy PUBSUB ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to helm package"
+        cp -p $WORKSPACE/$PBMODULE/${FRIENDLY_NAME}-riq-agent.yaml $WORKSPACE/$PKG/$RIQAGENT/$PBCHARTS/$VALUES
+        ls -l $WORKSPACE/$PKG/$RIQAGENT/$PBCHARTS/$VALUES
+        echo "Copy PUBSUB ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to S3"
+        aws s3 cp  $WORKSPACE/$PBMODULE/${FRIENDLY_NAME}-riq-agent.yaml $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$PUBSUB/$VALUES
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$PUBSUB/$VALUES
+        
+        '''
+        
+        echo ''
+        echo ''
+        echo "Checkout LISTENER repo ${LRREPO}"
+        echo '================================='
+        checkout([$class: 'GitSCM', branches: [[name: "*/master"]], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: "https://github.com/riqio/${LRREPO}.git"]]])
+        sh '''
+        pwd
+        ls -l
+        . $WORKSPACE/$ONBOARDING/$RESOURCE
+        echo ''
+        echo 'Copy values.yaml file of LISTENER'
+        echo '================================='
+        cat $WORKSPACE/$LRMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+        ls -l $WORKSPACE/$LRMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+                
+        echo''
+        echo 'Update the build tag in LISTENER values.yaml file'
+        echo '================================================='
+        if [ "$LISTENER_BUILD_NO" == "" ]
+        then
+            echo 'Provide build no to update LISTENER build tag'
+            exit 1
+        else
+            echo "Input provided to update LISTENER build tag is $LISTENER_BUILD_NO"
+            sed -i "s/tag:.*/tag: $LISTENER_BUILD_NO/" $WORKSPACE/$LRMODULE/${FRIENDLY_NAME}-riq-agent.yaml
+            cat $WORKSPACE/$LRMODULE/${FRIENDLY_NAME}-riq-agent.yaml | grep tag:
+        fi
+
+        echo "Copy LISTENER ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to helm package"
+        cp -p $WORKSPACE/$LRMODULE/${FRIENDLY_NAME}-riq-agent.yaml $WORKSPACE/$PKG/$RIQAGENT/$LRCHARTS/$VALUES
+        ls -l $WORKSPACE/$PKG/$RIQAGENT/$LRCHARTS/$VALUES
+        echo "Copy LISTENER ${FRIENDLY_NAME}-riq-agent.yaml as values.yaml to S3"
+        aws s3 cp  $WORKSPACE/$LRMODULE/${FRIENDLY_NAME}-riq-agent.yaml $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$LISTENER/$VALUES
+        aws s3 ls $DEPLOY_UI_S3/$TENANT_UUID/$AGENT_CONFIGS/$LISTENER/$VALUES
+        cd $WORKSPACE
+        echo "{\\"FRIENDLY_NAME\\": \\"$FRIENDLY_NAME\\"}" > artifact.json
+              ls -l artifact.json
+              cat artifact.json
+        '''
+        archiveArtifacts 'artifact.json'
+        
+                        }
+                    }
+                }
+            }
+
+        }
+    }
+
+} 
+    post {  
+     success {  
+       echo "${env.JOB_NAME} successful for $FRIENDLY_NAME "
+       mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD_NUMBER} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: 'devops', mimeType: 'text/html', replyTo: '', subject: "Build Success: Project name -> ${env.JOB_NAME} in ${env.repo_copy_from}", to: "${EMAIL_TO}";  
+     }  
+     failure {
+       echo "${env.JOB_NAME} failed to $FRIENDLY_NAME"
+       mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD_NUMBER} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: '', mimeType: 'text/html', replyTo: '', subject: "Build Failed: Project name -> ${env.JOB_NAME} in ${env.repo_copy_from}", to: "${EMAIL_TO}";  
+     }  
+   }
+   
+}

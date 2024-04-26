@@ -1,0 +1,324 @@
+  pipeline {
+  environment {
+  EMAIL_TO = 'devops-team@releaseiq.io'
+    GIT_AUTH = credentials('github')
+	ADMIN_BE_URL='https://rhea.api.releaseiq.io/admin-be'
+	VERIFIER_URL='https://rhea.api.releaseiq.io/verifier'
+	DATABASE_AGENT_NAME='riq-agent'
+	DATABASE_NAME='postgres'
+  }
+    agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: kaniko
+      spec:
+        containers:
+        - name: awscli
+          image: governmentpaas/awscli
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: curl
+          image: docker.io/gempesaw/curl-jq:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+    stages{
+	stage('UPDATE_PACKAGE') {
+          steps {
+		  checkout([$class: 'GitSCM', branches: [[name: '*/main']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/riq-docker-agent.git']]])	
+			 container(name: 'awscli'){
+            		withAWS(region:'us-west-2',credentials:'aws') {
+			sh '''
+			mkdir demo1
+			aws s3 cp s3://riq-staging/customer_onboarding/$FRIENDLY_NAME/resource.txt  $WORKSPACE/demo1/
+			chmod -R 777 demo1/resource.txt
+            chown -R 1000:1000 demo1
+            ls -l $WORKSPACE/demo1/
+            . $WORKSPACE/demo1/resource.txt
+      mkdir demo
+			aws s3 cp s3://riq-staging/buildnumber/rhea/builds.txt $WORKSPACE/demo
+			chmod -R 777 demo/builds.txt
+      chown -R 1000:1000 demo
+      ls -l $WORKSPACE/demo/
+			mv $WORKSPACE/demo/builds.txt $WORKSPACE/demo/buildnumber.txt
+			chmod -R 777 demo/buildnumber.txt
+			ls -l $WORKSPACE/demo/      
+			DB_PASSWORD_VALUE1=releaseiq123
+			JENKINS_PASSWORD_VALUE1=releaseiq@123
+			AWS_ACCESS_KEY_VALUE=$USER_ACCESSKEY
+			AWS_SECRET_KEY_VALUE=$USER_SECRETKEY
+			FLUENTD_PASSWORD_VALUE1=rjhQ8PHhT0VVgxAmgJPzCKQP
+			JASYPT_PASSWORD1=5e884898da280471
+
+			echo 'DB_PASSWORD_VALUE="'"$DB_PASSWORD_VALUE1"'"' > $WORKSPACE/secrets.sh
+			echo 'JENKINS_PASSWORD_VALUE="'"$JENKINS_PASSWORD_VALUE1"'"' >> $WORKSPACE/secrets.sh
+			echo 'AWS_ACCESS_KEY_VALUE="'"$USER_ACCESSKEY"'"' >> $WORKSPACE/secrets.sh
+			echo 'AWS_SECRET_KEY_VALUE="'"$USER_SECRETKEY"'"' >> $WORKSPACE/secrets.sh
+			echo 'FLUENTD_PASSWORD_VALUE="'"$FLUENTD_PASSWORD_VALUE1"'"' >> $WORKSPACE/secrets.sh
+			echo 'JASYPT_PASSWORD="'"$JASYPT_PASSWORD1"'"' >> $WORKSPACE/secrets.sh
+			
+			. $WORKSPACE/secrets.sh
+
+			openssl enc -aes-256-cbc -salt -md sha256 -in secrets.sh -out secrets.sh.enc -k $TENANT_UUID
+			
+			'''
+			}
+		}
+		
+			 
+			sh '''
+			. $WORKSPACE/demo1/resource.txt
+			echo '=========================='
+			ls -l
+			cd $WORKSPACE/postgres/macos
+			BASE_PKG_NAME1=$(ls $WORKSPACE/postgres/macos | sort -t. -k 3,3n | tail -1)
+			BASE_PKG_NAME=riq-agent.tgz
+			cp $BASE_PKG_NAME1 $BASE_PKG_NAME
+			
+			tar -xvf $BASE_PKG_NAME
+			cd docker-compose
+			if [ "$WORKFLOW_BUILD_NO" = "" ]
+			then
+				echo 'No input provided, using WROKFLOW build number from the current package'
+				echo 'Build Number in the base package'
+				w=$(cat $WORKSPACE/demo/buildnumber.txt | grep WORKFLOW_BUILD_NO | awk '{print $1}')
+				w1=$(echo $w | sed 's/WORKFLOW_BUILD_NO//g;s/"//g;s/=//g')
+				echo 'WORKFLOW_BUILD_NO="'"$w1"'"' >> $WORKSPACE/builds.txt
+			else
+				echo 'WORKFLOW_BUILD_NO="'"$WORKFLOW_BUILD_NO"'"' >> $WORKSPACE/builds.txt
+			fi
+			 
+			if [ "$ORCHESTRATOR_BUILD_NO" = "" ]
+			then
+				echo 'No input provided, using ORCHESTRATOR build number from the current package'
+				echo 'Build Number in the base package'
+				o=$(cat $WORKSPACE/demo/buildnumber.txt | grep ORCHESTRATOR_BUILD_NO | awk '{print $1}')
+				o1=$(echo $o | sed 's/ORCHESTRATOR_BUILD_NO//g;s/"//g;s/=//g')
+				echo 'ORCHESTRATOR_BUILD_NO="'"$o1"'"' >> $WORKSPACE/builds.txt
+			else
+				echo 'ORCHESTRATOR_BUILD_NO="'"$ORCHESTRATOR_BUILD_NO"'"' >> $WORKSPACE/builds.txt
+			fi
+			
+			if [ "$RESILIENCE_BUILD_NO" = "" ]
+			then
+				echo 'No input provided, using RESILIENCE build number from the current package'
+				echo 'Build Number in the base package'
+				r=$(cat $WORKSPACE/demo/buildnumber.txt | grep RESILIENCE_BUILD_NO | awk '{print $1}')
+				r1=$(echo $r | sed 's/RESILIENCE_BUILD_NO//g;s/"//g;s/=//g')
+				echo 'RESILIENCE_BUILD_NO="'"$r1"'"' >> $WORKSPACE/builds.txt
+			else
+				echo 'RESILIENCE_BUILD_NO="'"$RESILIENCE_BUILD_NO"'"' >> $WORKSPACE/builds.txt
+			fi
+			
+			if [ "$PUBSUB_BUILD_NO" = "" ]
+			then
+				echo 'No input provided, using PUBSUB build number from the current package'
+				echo 'Build Number in the base package'
+				p=$(cat $WORKSPACE/demo/buildnumber.txt | grep PUBSUB_BUILD_NO | awk '{print $1}')
+				p1=$(echo $p | sed 's/PUBSUB_BUILD_NO//g;s/"//g;s/=//g')
+				echo 'PUBSUB_BUILD_NO="'"$p1"'"' >> $WORKSPACE/builds.txt
+			else
+				echo 'PUBSUB_BUILD_NO="'"$PUBSUB_BUILD_NO"'"' >> $WORKSPACE/builds.txt
+			fi
+			
+			if [ "$LISTENER_BUILD_NO" = "" ]
+			then
+				echo 'No input provided, using LISTENER build number from the current package'
+				echo 'Build Number in the base package'
+				l=$(cat $WORKSPACE/demo/buildnumber.txt | grep LISTENER_BUILD_NO | awk '{print $1}')
+				l1=$(echo $l | sed 's/LISTENER_BUILD_NO//g;s/"//g;s/=//g')
+				echo 'LISTENER_BUILD_NO="'"$l1"'"' >> $WORKSPACE/builds.txt
+			else
+				echo 'LISTENER_BUILD_NO="'"$LISTENER_BUILD_NO"'"' >> $WORKSPACE/builds.txt
+			fi
+			
+			if [ "$CIINSIGHTS_BUILD_NO" = "" ]
+			then
+				echo 'No input provided, using CIINSIGHTS build number from the current package'
+				echo 'Build Number in the base package'
+				c=$(cat $WORKSPACE/demo/buildnumber.txt | grep CIINSIGHTS_BUILD_NO | awk '{print $1}')
+				c1=$(echo $c | sed 's/CIINSIGHTS_BUILD_NO//g;s/"//g;s/=//g')
+				echo 'CIINSIGHTS_BUILD_NO="'"$c1"'"' >> $WORKSPACE/builds.txt
+			else
+				echo 'CIINSIGHTS_BUILD_NO="'"$CIINSIGHTS_BUILD_NO"'"' >> $WORKSPACE/builds.txt
+			fi
+			
+			. $WORKSPACE/builds.txt
+			. $WORKSPACE/demo/buildnumber.txt
+			sed -i "s|TENANT_ID_VALUE|${TENANT_UUID}|" jenkins.sh
+			cp -p $WORKSPACE/secrets.sh.enc $WORKSPACE/postgres/macos/docker-compose 
+			cp -p $WORKSPACE/secrets.sh.enc $WORKSPACE/postgres/linux/docker-compose
+			v1=$(cat $WORKSPACE/demo/buildnumber.txt | grep PACKAGE_VERSION | awk '{print $1}')
+			v2=$(echo  $v1 | sed 's/"//g;s/PACKAGE_VERSION//g;s/=//g')
+			echo "current version is $v1"
+			echo 'VERSION="'"$v2"'"' >> $WORKSPACE/demo1/resource.txt
+			echo 'VERSION="'"$v2"'"' > $WORKSPACE/values1.txt
+			export VERSION=$v2
+
+			sed -i "s|version: .*|version: $VERSION|g" version.txt
+			cat version.txt
+
+			v=$(cat version.txt | grep version | awk '{print $2}')
+			echo "current version is $v"
+			echo 'VERSION="'"$v"'"' >> $WORKSPACE/demo1/resource.txt
+			vnew=$v 
+			echo 'vnew="'"$vnew"'"' >> $WORKSPACE/demo1/resource.txt
+			. $WORKSPACE/demo1/resource.txt
+			cat docker-compose.yml
+			 
+			sed -i "s|svc_workflowexecutor:.*|svc_workflowexecutor:${WORKFLOW_BUILD_NO}|" docker-compose.yml
+			sed -i "s|641518622681.dkr.ecr.us-west-2.amazonaws.com/svc_ci_insights:.*|641518622681.dkr.ecr.us-west-2.amazonaws.com/svc_ci_insights:${CIINSIGHTS_BUILD_NO}|" docker-compose.yml
+			sed -i "s|641518622681.dkr.ecr.us-west-2.amazonaws.com/orchestrator:.*|641518622681.dkr.ecr.us-west-2.amazonaws.com/orchestrator:${ORCHESTRATOR_BUILD_NO}|" docker-compose.yml
+			sed -i "s|svc_orchestrator_resilience:.*|svc_orchestrator_resilience:${RESILIENCE_BUILD_NO}|" docker-compose.yml
+			sed -i "s|riq-plat-listener:.*|riq-plat-listener:${LISTENER_BUILD_NO}|" docker-compose.yml
+			sed -i "s|riq-plat-pubsub:.*|riq-plat-pubsub:${PUBSUB_BUILD_NO}|" docker-compose.yml
+			
+			cat docker-compose.yml
+			
+			cd riq-agent
+			. $WORKSPACE/demo1/resource.txt
+			. $WORKSPACE/builds.txt
+			
+			cat wfexecutor.properties
+			wrokflow_version_no="$vnew.$WORKFLOW_BUILD_NO"
+			sed -i "s|riq_agent.tenantId = .*|riq_agent.tenantId = ${TENANT_UUID}|" wfexecutor.properties
+			sed -i "s|service.version=.*|service.version=${wrokflow_version_no}|" wfexecutor.properties
+			sed -i "s|riq.database.name= .*|riq.database.name= ${DATABASE_NAME}|" wfexecutor.properties
+			sed -i "s|riq.database.schema.name= .*|riq.database.schema.name= ${DATABASE_AGENT_NAME}|" wfexecutor.properties
+		   	sed -i "s|riq.enterprise.key = .*|riq.enterprise.key = ${ENTERPRISE_KEY}|" wfexecutor.properties
+		   	sed -i "s|aws.s3.bucket = .*|aws.s3.bucket = ${S3_BUCKET_NAME}|" wfexecutor.properties
+			cat wfexecutor.properties
+			
+			cat insights.properties
+			insights_version_no="$vnew.$CIINSIGHTS_BUILD_NO"
+			sed -i "s|riq_agent.tenantId = .*|riq_agent.tenantId = ${TENANT_UUID}|" insights.properties
+			sed -i "s|riq.database.name= .*|riq.database.name= ${DATABASE_NAME}|" insights.properties
+			sed -i "s|riq.database.schema.name= .*|riq.database.schema.name= ${DATABASE_AGENT_NAME}|" insights.properties
+			sed -i "s|riq.enterprise.key = .*|riq.enterprise.key = ${ENTERPRISE_KEY}|" insights.properties
+			sed -i "s|s3.bucket= .*|s3.bucket= ${S3_BUCKET_NAME}|" insights.properties
+			sed -i "s|service.version=.*|service.version=${insights_version_no}|" insights.properties
+			cat insights.properties
+			
+			
+			cat orchestrator.properties
+			orchestrator_version_no="$vnew.$ORCHESTRATOR_BUILD_NO"
+			sed -i "s|riq_agent.tenantId = .*|riq_agent.tenantId = ${TENANT_UUID}|" orchestrator.properties
+			sed -i "s|riq.database.name= .*|riq.database.name= ${DATABASE_NAME}|" orchestrator.properties
+			sed -i "s|riq.database.schema.name= .*|riq.database.schema.name= ${DATABASE_AGENT_NAME}|" orchestrator.properties
+			sed -i "s|service.version=.*|service.version=${orchestrator_version_no}|" orchestrator.properties
+			cat orchestrator.properties
+			
+			cat resilience.properties
+			resilience_version_no="$vnew.$RESILIENCE_BUILD_NO"
+			sed -i "s|riq_agent.tenantId = .*|riq_agent.tenantId = ${TENANT_UUID}|" resilience.properties
+			sed -i "s|service.version=.*|service.version=${resilience_version_no}|" resilience.properties
+			sed -i "s|riq.database.name= .*|riq.database.name= ${DATABASE_NAME}|" resilience.properties
+			sed -i "s|riq.database.schema.name= .*|riq.database.schema.name= ${DATABASE_AGENT_NAME}|" resilience.properties
+			sed -i "s|riq.enterprise.key = .*|riq.enterprise.key = ${ENTERPRISE_KEY}|" resilience.properties
+			sed -i "s|s3.bucket= .*|s3.bucket= ${S3_BUCKET_NAME}|" resilience.properties
+			sed -i "s|riq.admin_backend.baseurl = .*|riq.admin_backend.baseurl = ${ADMIN_BE_URL}|" resilience.properties
+			sed -i "s|riq.verification.service.baseurl = .*|riq.verification.service.baseurl = ${VERIFIER_URL}|" resilience.properties
+			cat resilience.properties
+			
+			cat pubsub.properties
+			pubsub_version_no="$vnew.$PUBSUB_BUILD_NO"
+			sed -i "s|FRIENDLY_NAME|${FRIENDLY_NAME}|" pubsub.properties
+			sed -i "s|https://us-west-2.queue.amazonaws.com/641518622681/.*_health_riq-agent_productbe.fifo|https://us-west-2.queue.amazonaws.com/641518622681/${FRIENDLY_NAME}_health_riq-agent_productbe.fifo|" pubsub.properties
+			sed -i "s|https://us-west-2.queue.amazonaws.com/641518622681/.*_pipeline_riq-agent_productbe.fifo|https://us-west-2.queue.amazonaws.com/641518622681/${FRIENDLY_NAME}_pipeline_riq-agent_productbe.fifo|" pubsub.properties
+			sed -i "s|https://us-west-2.queue.amazonaws.com/641518622681/.*_actions_productbe_riq-agent.fifo|https://us-west-2.queue.amazonaws.com/641518622681/${FRIENDLY_NAME}_actions_productbe_riq-agent.fifo|" pubsub.properties
+			sed -i "s|https://us-west-2.queue.amazonaws.com/641518622681/.*_adminbe_riq-agent.fifo|https://us-west-2.queue.amazonaws.com/641518622681/${FRIENDLY_NAME}_adminbe_riq-agent.fifo|" pubsub.properties
+			sed -i "s|https://us-west-2.queue.amazonaws.com/641518622681/.*_riq-agent_adminbe.fifo|https://us-west-2.queue.amazonaws.com/641518622681/${FRIENDLY_NAME}_riq-agent_adminbe.fifo|" pubsub.properties
+			sed -i "s|https://sqs.us-west-2.amazonaws.com/641518622681/.*_insights_riq-agent_productbe.fifo|https://sqs.us-west-2.amazonaws.com/641518622681/${FRIENDLY_NAME}_insights_riq-agent_productbe.fifo|" pubsub.properties
+			sed -i "s|riq_agent.tenantId = .*|riq_agent.tenantId = ${TENANT_UUID}|" pubsub.properties
+			sed -i "s|riq.database.name= .*|riq.database.name= ${DATABASE_NAME}|" pubsub.properties
+			sed -i "s|riq.database.schema.name= .*|riq.database.schema.name= ${DATABASE_AGENT_NAME}|" pubsub.properties
+			sed -i "s|service.version=.*|service.version=${pubsub_version_no}|" pubsub.properties
+		   	sed -i "s|riq.enterprise.key = .*|riq.enterprise.key = ${ENTERPRISE_KEY}|" pubsub.properties
+			sed -i "s|riq.admin_backend.baseurl = .*|riq.admin_backend.baseurl = ${ADMIN_BE_URL}|" pubsub.properties
+		   	sed -i "s|aws.s3.bucket.name = .*|aws.s3.bucket.name = ${S3_BUCKET_NAME}|" pubsub.properties
+			cat pubsub.properties
+			
+			cat listener.properties
+			listener_version_no="$vnew.$LISTENER_BUILD_NO"
+			sed -i "s|riq_agent.tenantId = .*|riq_agent.tenantId = ${TENANT_UUID}|" listener.properties
+			sed -i "s|service.version=.*|service.version=${listener_version_no}|" listener.properties
+			sed -i "s|riq.database.name= .*|riq.database.name= ${DATABASE_NAME}|" listener.properties
+			sed -i "s|riq.database.schema.name= .*|riq.database.schema.name= ${DATABASE_AGENT_NAME}|" listener.properties
+		   	sed -i "s|riq.enterprise.key = .*|riq.enterprise.key = ${ENTERPRISE_KEY}|" listener.properties
+		   	sed -i "s|riq.admin_backend.baseurl = .*|riq.admin_backend.baseurl = ${ADMIN_BE_URL}|" listener.properties
+			sed -i "s|GITHUB_CLIENT_ID|${GITHUB_CLIENT_ID}|" listener.properties
+		   	sed -i "s|GITHUB_CLIENT_SECRET|${GITHUB_CLIENT_SECRET}|" listener.properties
+			cat listener.properties
+			
+			cd $WORKSPACE/postgres/macos/docker-compose
+			. $WORKSPACE/demo1/resource.txt
+			cat version.txt
+			sed -i "s|version: .*|version: ${vnew}|" version.txt
+			cat version.txt
+			cd $WORKSPACE/postgres/macos
+			tar -czvf riq-agent.tgz docker-compose
+			rm -rf docker-compose
+			cp -p riq-agent.tgz riq-agent-docker-macos.tgz
+			ls -la
+			'''
+			
+			 container(name: 'awscli'){
+            		withAWS(region:'us-west-2',credentials:'aws') {
+			sh '''
+			. $WORKSPACE/demo1/resource.txt
+			. $WORKSPACE/builds.txt
+			cd $WORKSPACE/postgres/macos
+			aws s3 cp riq-agent-docker-macos.tgz s3://${S3_BUCKET_NAME}/package/
+			echo WORKFLOW_BUILD_NO="$WORKFLOW_BUILD_NO" > $WORKSPACE/var.properties
+			echo ORCHESTRATOR_BUILD_NO="$ORCHESTRATOR_BUILD_NO" >> $WORKSPACE/var.properties
+			echo RESILIENCE_BUILD_NO="$RESILIENCE_BUILD_NO" >> $WORKSPACE/var.properties
+			echo PUBSUB_BUILD_NO="$PUBSUB_BUILD_NO" >> $WORKSPACE/var.properties
+			echo LISTENER_BUILD_NO="$LISTENER_BUILD_NO" >> $WORKSPACE/var.properties
+			echo CIINSIGHTS_BUILD_NO="$CIINSIGHTS_BUILD_NO" >> $WORKSPACE/var.properties
+			echo FRIENDLY_NAME="$FRIENDLY_NAME" >> $WORKSPACE/var.properties
+			cd $WORKSPACE
+			echo "{\\"FRIENDLY_NAME\\": \\"$FRIENDLY_NAME\\"}" > artifact.json
+			    ls -l artifact.json
+			    cat artifact.json
+			'''
+			archiveArtifacts 'artifact.json'
+			}
+			}
+			script {
+		def props = readProperties file: 'var.properties'
+		env.FRIENDLY_NAME = props.FRIENDLY_NAME
+		env.WORKFLOW_BUILD_NO = props.WORKFLOW_BUILD_NO
+		env.ORCHESTRATOR_BUILD_NO = props.ORCHESTRATOR_BUILD_NO
+		env.RESILIENCE_BUILD_NO = props.RESILIENCE_BUILD_NO
+		env.LISTENER_BUILD_NO = props.LISTENER_BUILD_NO
+		env.PUBSUB_BUILD_NO = props.PUBSUB_BUILD_NO
+		buildName "$FRIENDLY_NAME-W:${WORKFLOW_BUILD_NO}-CI:${CIINSIGHTS_BUILD_NO}-O:${ORCHESTRATOR_BUILD_NO}-R:${RESILIENCE_BUILD_NO}-P:${PUBSUB_BUILD_NO}-L:${LISTENER_BUILD_NO}"
+		}
+			}
+			}
+			}
+post {
+         success {  
+             echo "${env.JOB_NAME} resource pool creation successful to  Sending email"
+             mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: 'devops', mimeType: 'text/html', replyTo: '', subject: "Build Success: Project name -> ${env.JOB_NAME} in ${env.BUILD}", to: "${EMAIL_TO}";  
+         }  
+         failure {
+             echo "${env.JOB_NAME} resource pool failed to Sending email"
+             mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: '', mimeType: 'text/html', replyTo: '', subject: "Build Failed: Project name -> ${env.JOB_NAME} in ${env.BUILD}", to: "${EMAIL_TO}";  
+         }  
+     }			
+			
+			}

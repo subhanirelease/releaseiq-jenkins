@@ -1,0 +1,90 @@
+   pipeline {
+  environment {
+    EMAIL_TO = ' subhani.s@releaseiq.io'
+    AUTOMATION_DIR='build/automation'
+    USER_NAME="tsubhanishaik86@gmail.com"
+	App="app.txt"
+    /*
+    deleted input parameters
+    JIRA_TICKET="rsk-100"
+    BASE_PKG_NAME="solta-riq-agent"
+    DATABASE_PASSWORD="12345678"
+    ENTERPRISE_KEY="12345678"
+    */
+  }
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: kaniko
+      spec:
+        containers:
+        - name: awscli
+          image: docker.io/mikesir87/aws-cli:1.18.188
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: curl
+          image: docker.io/gempesaw/curl-jq:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+         
+      """
+    }
+  }
+    stages{
+	 
+      stage('AWS SERVICES') {
+          steps {
+		    script {
+			container(name: 'awscli'){
+            withAWS(region:'us-west-2',credentials:'aws') {
+                        script {
+                            sh '''
+                            SQS_NAME="${FRIENDLY_NAME}*"
+							aws iam get-policy --policy-arn arn:aws:iam::641518622681:policy/test18.onboarding | tee automation.txt
+							cat automation.txt
+                            VERSION_ID=$( grep "DefaultVersionId" automation.txt | awk '{print$2}')
+                            echo "user pool Id $VERSION_ID"
+                            VERSION_ID=$(echo  $VERSION_ID | sed 's/"//g')
+                            VERSION_ID=$(echo $VERSION_ID | sed 's/,//g')
+                            echo  'VERSION_ID="'"$VERSION_ID"'"' > $WORKSPACE/resource.txt
+							aws iam get-policy-version --policy-arn arn:aws:iam::641518622681:policy/test18.onboarding --version-id $VERSION_ID | tee policy1.txt
+							cat $WORKSPACE/policy1.txt
+							sed -e '/PolicyVersion/,+1d' policy1.txt | tee policy2.json
+							cat policy2.json
+							sed -e '/VersionId/,+5d' policy2.json | tee policy3.json
+							cat policy3.json
+							sed -i '$s/,$//' policy3.json
+							cat policy3.json
+							jq --version
+							jq --arg new "arn:aws:sqs:us-west-2:641518622681:queue.fifo" '.Statement[].Resource? += [$new]' policy3.json | tee policy4.json
+							cat policy4.json
+							sed -i "s|queue.fifo|${SQS_NAME}|g" policy4.json
+							cat policy4.json
+							aws iam create-policy-version --policy-arn arn:aws:iam::641518622681:policy/test18.onboarding --policy-document file://policy4.json --set-as-default
+						    aws iam delete-policy-version --policy-arn arn:aws:iam::641518622681:policy/test18.onboarding --version-id $VERSION_ID
+							aws iam list-policy-versions --policy-arn arn:aws:iam::641518622681:policy/test18.onboarding
+							cd $WORKSPACE
+							echo "{\\"FRIENDLY_NAME\\": \\"$FRIENDLY_NAME\\"}" > artifact.json
+							ls -l artifact.json
+							cat artifact.json
+							'''
+							
+							archiveArtifacts 'artifact.json'
+							
+                             }
+							 }
+						}
+						
+						}
+						}
+						}
+						}
+						}
+						
