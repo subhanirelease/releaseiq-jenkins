@@ -1,0 +1,69 @@
+pipeline {
+  environment {
+    EMAIL_TO = 'devops-team@releaseiq.io,platform-team@releaseiq.io,nmallapragada@releaseiq.io,admin-team@releaseiq.io'
+    module="analytics"
+  }
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: curl
+      spec:
+        containers:
+        - name: curl
+          image: docker.io/gempesaw/curl-jq:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: openjdk-11
+          image: openjdk:11.0.6-jdk
+          imagePullPolicy: IfNotPresent
+          command:
+          - cat
+          tty: true
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+  stages {
+    stage('app test') {
+      steps {
+        script {
+          if(env.NAMESPACE != "prod-riq-agent") {
+            container(name: 'openjdk-11') {
+              checkout([$class: 'GitSCM', branches: [[name: '*/$BRANCH_NAME']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/riq-analytics.git']]])
+    
+            }
+          }
+        }
+      }
+    }
+
+    stage('Unit Test Report') {
+      steps {
+        script {
+          if(env.NAMESPACE != "prod-riq-agent") {
+            //junit keepLongStdio: true, testResults: 'target/surefire-reports/*.xml'
+          }
+        }
+      }
+    }
+
+  }
+  post {
+    success {
+     echo "${env.JOB_NAME} Success"
+     mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD_NUMBER} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: 'devops', mimeType: 'text/html', replyTo: '', subject: "Build Success: Project name -> ${env.JOB_NAME} in ${env.ENV_NAME}", to: "${EMAIL_TO}";
+    }
+    failure {
+     echo "${env.JOB_NAME} Failed"
+     mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD_NUMBER} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: '', mimeType: 'text/html', replyTo: '', subject: "Build Failed: Project name -> ${env.JOB_NAME} in ${env.ENV_NAME}", to: "${EMAIL_TO}";
+    }
+  }
+}

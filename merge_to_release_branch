@@ -1,0 +1,85 @@
+pipeline {
+  environment {
+        git_tag="${env.JOB_NAME}-${env.BUILD_NUMBER}"
+        GIT_AUTH = credentials('drcloud_bitbucket')
+  }
+  agent any
+    stages {
+    stage('checkout') {
+      steps {
+            buildName "${COMMITID}-${TARGET_BRANCH}"
+            checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'WipeWorkspace']], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'drcloud_bitbucket', url: 'https://suryadharshan@bitbucket.org/drcloud/dc_ehr_2020.git']]])
+      }
+    }
+    
+    stage('Merge') {
+    steps {
+        sh'''
+        set +x
+        echo ""
+        echo "Checkout Target Branch $TARGET_BRANCH"
+        git checkout "$TARGET_BRANCH"
+
+        echo ""
+        git pull origin $TARGET_BRANCH:$TARGET_BRANCH
+        
+        echo ""
+        git log -1
+
+        echo ""
+        echo "MERGE TARGETED COMMIT $COMMITID TO $TARGET_BRANCH"
+        
+        echo ""
+        echo "Check no of parents for commit"
+        git rev-parse "$COMMITID"^@
+        
+        PARENT_COUNT=`(git rev-parse "$COMMITID"^@ | wc -l)`
+        echo "PARENT_COUNT values is $PARENT_COUNT"
+        if [ $PARENT_COUNT -eq 1 ]
+        then
+            git -c merge.renameLimit=1330 cherry-pick -x -X theirs $COMMITID
+        fi
+
+        if [ $PARENT_COUNT -eq 2 ]
+        then
+            echo ""
+            git rev-parse "$COMMITID"^1
+
+            echo ""
+            git rev-parse "$COMMITID"^2
+
+            git -c merge.renameLimit=1330  cherry-pick -x -m 1 -X theirs $COMMITID || true
+            git status
+            CONFLICT=$(git status | grep "deleted by us:" | wc -l)
+            if [ "$CONFLICT" -ne 0 ]; then
+                    echo ""
+                    echo "Adding CONFLICT files"
+                    git status | sed -n 's/deleted by us://p' 
+                    git status | sed -n 's/deleted by us://p' | xargs git add
+                    git -c core.editor=true cherry-pick --continue
+                    
+                    echo 'Sending Notification email on conflicts'
+                    echo '---------------------------------------'
+                    mailbody="Please check merge_to_release_branch job has merge conflict. \nFiles has been added to resolve conflict. \nJOB URL - $BUILD_URL/console\n\nThank you"
+                    echo "To: suryaa@drcloudemr.com,prabhu.k@releaseiq.io" > /tmp/mailtest
+                    echo "Subject: Cherry Pick Conflict - Notification" >> /tmp/mailtest
+                    echo "" >> /tmp/mailtest
+                    echo $mailbody >> /tmp/mailtest
+                    cat /tmp/mailtest | ssmtp suryaa@drcloudemr.com
+            fi
+        fi
+        
+        git log -2
+
+        git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+        git config --global user.email "suryaa@drcloudemr.com"
+        git config --global user.name "suryadharshan"
+        git config --global credential.helper cache
+        git config --global push.default simple
+        git push origin $BR
+        '''
+      }
+    }
+
+  }
+}

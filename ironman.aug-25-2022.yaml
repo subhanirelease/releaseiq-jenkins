@@ -1,0 +1,262 @@
+apiVersion: jenkins.io/v1alpha2
+kind: Jenkins
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"jenkins.io/v1alpha2","kind":"Jenkins","metadata":{"annotations":{},"name":"riq-stg-master01","namespace":"jenkins"},"spec":{"backup":{"action":{"exec":{"command":["/home/user/bin/backup.sh"]}},"containerName":"backup","interval":7200,"makeBackupBeforePodDeletion":true},"configurationAsCode":{"configurations":[],"secret":{"name":""}},"groovyScripts":{"configurations":[],"secret":{"name":""}},"jenkinsAPISettings":{"authorizationStrategy":"createUser"},"master":{"basePlugins":[{"name":"sshd","version":"3.228.v4c9f9e652c86"},{"name":"kubernetes","version":"1.30.1"},{"name":"workflow-job","version":"1145.v7f2433caa07f"},{"name":"kubernetes-client-api","version":"5.4.1"},{"name":"workflow-aggregator","version":"2.6"},{"name":"git","version":"4.10.1"},{"name":"job-dsl","version":"1.77"},{"name":"configuration-as-code","version":"1.55.1"},{"name":"kubernetes-credentials-provider","version":"0.18-1"},{"name":"nodejs","version":"1.4.0"},{"name":"bitbucket","version":"1.1.27"},{"name":"aws-bucket-credentials","version":"1.0.0"},{"name":"s3","version":"0.11.7"},{"name":"aws-credentials","version":"1.30"},{"name":"pipeline-aws","version":"1.43"},{"name":"jenkins-multijob-plugin","version":"1.36"},{"name":"jobConfigHistory","version":"2.28.1"},{"name":"matrix-auth","version":"2.6.8"},{"name":"build-name-setter","version":"2.2.0"},{"name":"extended-choice-parameter","version":"0.82"},{"name":"logstash","version":"2.4.0"},{"name":"sonar","version":"2.13.1"},{"name":"p4","version":"1.11.5"},{"name":"gradle","version":"1.36"},{"name":"subversion","version":"2.15.1"},{"name":"syslog-logger","version":"1.0.5"},{"name":"gitlab-plugin","version":"1.5.20"},{"name":"gitlab-oauth","version":"1.10"},{"name":"gitlab-api","version":"5.0.1-69.vcdc19e779072"},{"name":"external-monitor-job","version":"1.7"},{"name":"timestamper","version":"1.13"},{"name":"artifactory","version":"3.13.0"},{"name":"pipeline-utility-steps","version":"2.8.0"},{"name":"sonar-quality-gates","version":"1.3.1"},{"name":"okhttp-api","version":"4.9.3-105.vb96869f8ac3a"},{"name":"github","version":"1.34.3"},{"name":"jacoco","version":"3.3.2"},{"name":"blueocean","version":"1.25.3"},{"name":"sauce-ondemand","version":"1.199"},{"name":"cloudbees-bitbucket-branch-source","version":"762.v969cfe087fc0"},{"name":"blueocean-bitbucket-pipeline","version":"1.25.3"}],"containers":[{"image":"jenkins/jenkins:2.319.1-lts-alpine","imagePullPolicy":"IfNotPresent","name":"jenkins-master","resources":{"limits":{"cpu":2,"memory":"6Gi"},"requests":{"cpu":1,"memory":"500Mi"}}},{"env":[{"name":"BACKUP_DIR","value":"/backup"},{"name":"JENKINS_HOME","value":"/jenkins-home"},{"name":"BACKUP_COUNT","value":"5"}],"image":"virtuslab/jenkins-operator-backup-pvc:v0.1.0","imagePullPolicy":"IfNotPresent","name":"backup","resources":{"limits":{"cpu":"1000m","memory":"2Gi"},"requests":{"cpu":1,"memory":"500Mi"}},"volumeMounts":[{"mountPath":"/jenkins-home","name":"jenkins-home"},{"mountPath":"/backup","name":"backup"}]}],"disableCSRFProtection":false,"volumes":[{"name":"backup","persistentVolumeClaim":{"claimName":"riq-ironman-jenkins-master"}}]},"restore":{"action":{"exec":{"command":["/home/user/bin/restore.sh"]}},"containerName":"backup","getLatestAction":{"exec":{"command":["/home/user/bin/get-latest.sh"]}},"recoveryOnce":8930},"seedJobs":[{"credentialID":"github-staging","credentialType":"usernamePassword","description":"Jenkins Operator repository","id":"jenkins-operator","repositoryBranch":"master","repositoryUrl":"https://github.com/riqtest01/riq-stg-jenkins-pipeline-jobs.git","targets":"cicd/jobs/*.jenkins"}]}}
+  creationTimestamp: "2022-05-12T13:48:52Z"
+  generation: 36
+  name: riq-stg-master01
+  namespace: jenkins
+  resourceVersion: "159116152"
+  uid: 9de2ac47-597b-4a0c-a65a-beae8554f163
+spec:
+  backup:
+    action:
+      exec:
+        command:
+        - /home/user/bin/backup.sh
+    containerName: backup
+    interval: 7200
+    makeBackupBeforePodDeletion: true
+  configurationAsCode:
+    configurations: []
+    secret:
+      name: ""
+  groovyScripts:
+    configurations: []
+    secret:
+      name: ""
+  jenkinsAPISettings:
+    authorizationStrategy: createUser
+  master:
+    basePlugins:
+    - name: sshd
+      version: 3.228.v4c9f9e652c86
+    - name: kubernetes
+      version: 1.30.1
+    - name: workflow-job
+      version: 1145.v7f2433caa07f
+    - name: kubernetes-client-api
+      version: 5.4.1
+    - name: workflow-aggregator
+      version: "2.6"
+    - name: git
+      version: 4.10.1
+    - name: job-dsl
+      version: "1.77"
+    - name: configuration-as-code
+      version: 1.55.1
+    - name: kubernetes-credentials-provider
+      version: 0.18-1
+    - name: nodejs
+      version: 1.4.0
+    - name: bitbucket
+      version: 1.1.27
+    - name: aws-bucket-credentials
+      version: 1.0.0
+    - name: s3
+      version: 0.11.7
+    - name: aws-credentials
+      version: "1.30"
+    - name: pipeline-aws
+      version: "1.43"
+    - name: jenkins-multijob-plugin
+      version: "1.36"
+    - name: jobConfigHistory
+      version: 2.28.1
+    - name: matrix-auth
+      version: 2.6.8
+    - name: build-name-setter
+      version: 2.2.0
+    - name: extended-choice-parameter
+      version: "0.82"
+    - name: logstash
+      version: 2.4.0
+    - name: sonar
+      version: 2.13.1
+    - name: p4
+      version: 1.11.5
+    - name: gradle
+      version: "1.36"
+    - name: subversion
+      version: 2.15.1
+    - name: syslog-logger
+      version: 1.0.5
+    - name: gitlab-plugin
+      version: 1.5.20
+    - name: gitlab-oauth
+      version: "1.10"
+    - name: gitlab-api
+      version: 5.0.1-69.vcdc19e779072
+    - name: external-monitor-job
+      version: "1.7"
+    - name: timestamper
+      version: "1.13"
+    - name: artifactory
+      version: 3.13.0
+    - name: pipeline-utility-steps
+      version: 2.8.0
+    - name: sonar-quality-gates
+      version: 1.3.1
+    - name: okhttp-api
+      version: 4.9.3-105.vb96869f8ac3a
+    - name: github
+      version: 1.34.3
+    - name: jacoco
+      version: 3.3.2
+    - name: blueocean
+      version: 1.25.3
+    - name: sauce-ondemand
+      version: "1.199"
+    - name: cloudbees-bitbucket-branch-source
+      version: 762.v969cfe087fc0
+    - name: blueocean-bitbucket-pipeline
+      version: 1.25.3
+    containers:
+    - command:
+      - bash
+      - -c
+      - /var/jenkins/scripts/init.sh && exec /sbin/tini -s -- /usr/local/bin/jenkins.sh
+      env:
+      - name: JAVA_OPTS
+        value: -XX:MinRAMPercentage=50.0 -XX:MaxRAMPercentage=80.0 -Djenkins.install.runSetupWizard=false
+          -Djava.awt.headless=true
+      image: jenkins/jenkins:2.319.1-lts-alpine
+      imagePullPolicy: IfNotPresent
+      livenessProbe:
+        failureThreshold: 12
+        httpGet:
+          path: /login
+          port: http
+          scheme: HTTP
+        initialDelaySeconds: 80
+        periodSeconds: 1
+        successThreshold: 1
+        timeoutSeconds: 5
+      name: jenkins-master
+      readinessProbe:
+        failureThreshold: 10
+        httpGet:
+          path: /login
+          port: http
+          scheme: HTTP
+        initialDelaySeconds: 60
+        periodSeconds: 1
+        successThreshold: 1
+        timeoutSeconds: 1
+      resources:
+        limits:
+          cpu: "2"
+          memory: 6Gi
+        requests:
+          cpu: "1"
+          memory: 500Mi
+    - env:
+      - name: BACKUP_DIR
+        value: /backup
+      - name: JENKINS_HOME
+        value: /jenkins-home
+      - name: BACKUP_COUNT
+        value: "5"
+      image: virtuslab/jenkins-operator-backup-pvc:v0.1.0
+      imagePullPolicy: IfNotPresent
+      name: backup
+      resources:
+        limits:
+          cpu: "1"
+          memory: 2Gi
+        requests:
+          cpu: "1"
+          memory: 500Mi
+      volumeMounts:
+      - mountPath: /jenkins-home
+        name: jenkins-home
+      - mountPath: /backup
+        name: backup
+    disableCSRFProtection: false
+    volumes:
+    - name: backup
+      persistentVolumeClaim:
+        claimName: riq-ironman-jenkins-master
+  restore:
+    action:
+      exec:
+        command:
+        - /home/user/bin/restore.sh
+    containerName: backup
+    getLatestAction:
+      exec:
+        command:
+        - /home/user/bin/get-latest.sh
+  seedJobs:
+  - additionalClasspath: ""
+    bitbucketPushTrigger: false
+    buildPeriodically: ""
+    credentialID: github-staging
+    credentialType: usernamePassword
+    description: Jenkins Operator repository
+    failOnMissingPlugin: false
+    githubPushTrigger: false
+    id: jenkins-operator
+    ignoreMissingFiles: false
+    pollSCM: ""
+    repositoryBranch: master
+    repositoryUrl: https://github.com/riqtest01/riq-stg-jenkins-pipeline-jobs.git
+    targets: cicd/jobs/*.jenkins
+    unstableOnDeprecation: false
+  service:
+    port: 8080
+    type: ClusterIP
+  serviceAccount: {}
+  slaveService:
+    port: 50000
+    type: ClusterIP
+status:
+  appliedGroovyScripts:
+  - configurationType: base-groovy
+    hash: 2ownqpRyBjQYmzTRttUx7axok3CKe2E45frI5iRwH0w=
+    name: 1-basic-settings.groovy
+    source: jenkins-operator-base-configuration-riq-stg-master01
+  - configurationType: base-groovy
+    hash: 1l7hg1In2vCY8oFKCxkp91ht1caBNePvivedRKUva7g=
+    name: 2-enable-csrf.groovy
+    source: jenkins-operator-base-configuration-riq-stg-master01
+  - configurationType: base-groovy
+    hash: ZP7WGnOA6YYKfhoa7IlP2lG2RLPn081QHIu1DznYTts=
+    name: 3-disable-usage-stats.groovy
+    source: jenkins-operator-base-configuration-riq-stg-master01
+  - configurationType: base-groovy
+    hash: 1ORUpG6AWGPHemj1oDsiBVYhb7H0yG0nDs9/1xUDKSs=
+    name: 4-enable-master-access-control.groovy
+    source: jenkins-operator-base-configuration-riq-stg-master01
+  - configurationType: base-groovy
+    hash: 4vr+VKaawA4NSHiUt4wTkI3y5NxbCQEIH0Krye9aL8M=
+    name: 5-disable-insecure-features.groovy
+    source: jenkins-operator-base-configuration-riq-stg-master01
+  - configurationType: base-groovy
+    hash: ZoBw/GI6USkTHcSeJwt9SbhZuIpxcGNldBSff6G33hE=
+    name: 6-configure-kubernetes-plugin.groovy
+    source: jenkins-operator-base-configuration-riq-stg-master01
+  - configurationType: base-groovy
+    hash: hA1IFmAcWwQGhlYDBKxBiMhm+Cs66rcnlRGQNwGaiYo=
+    name: 7-configure-views.groovy
+    source: jenkins-operator-base-configuration-riq-stg-master01
+  - configurationType: base-groovy
+    hash: g3CGJnZXup0h70AOgYOAv6YYAoi+0lfUebS+XnL1rSQ=
+    name: 8-disable-job-dsl-script-approval.groovy
+    source: jenkins-operator-base-configuration-riq-stg-master01
+  - configurationType: seed-jobs
+    hash: Vy1oMSiDjrwwFbdRpDkrg0837_aPGN9kbJnjycBgDh4=
+    name: jenkins-operator.groovy
+    source: jenkins-operator
+  baseConfigurationCompletedTime: "2022-08-12T01:35:47Z"
+  createdSeedJobs:
+  - jenkins-operator
+  lastBackup: 9061
+  operatorVersion: v0.7.0
+  pendingBackup: 9062
+  provisionStartTime: "2022-08-12T01:34:22Z"
+  restoredBackup: 8930
+  userAndPasswordHash: UhKXSbo3WZEVTHYUO3bET6E+lQ2iremp3MMgP5/cs8g=
+  userConfigurationCompletedTime: "2022-08-12T03:47:02Z"

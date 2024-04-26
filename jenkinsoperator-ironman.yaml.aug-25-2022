@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  annotations:
+    deployment.kubernetes.io/desired-replicas: "1"
+    deployment.kubernetes.io/max-replicas: "2"
+    deployment.kubernetes.io/revision: "4"
+  creationTimestamp: "2022-05-30T07:10:15Z"
+  generation: 1
+  labels:
+    control-plane: controller-manager
+    pod-template-hash: 6f76b4dd5
+  name: jenkins-operator-6f76b4dd5
+  namespace: jenkins
+  ownerReferences:
+  - apiVersion: apps/v1
+    blockOwnerDeletion: true
+    controller: true
+    kind: Deployment
+    name: jenkins-operator
+    uid: fc3e0137-e532-490d-9567-c048af2ed7c7
+  resourceVersion: "151727495"
+  uid: 277418d8-6826-4caa-a623-5d74ca474116
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      pod-template-hash: 6f76b4dd5
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        control-plane: controller-manager
+        pod-template-hash: 6f76b4dd5
+    spec:
+      containers:
+      - args:
+        - --leader-elect
+        command:
+        - /manager
+        env:
+        - name: WATCH_NAMESPACE
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: metadata.namespace
+        image: virtuslab/jenkins-operator:13f871b
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 10
+          httpGet:
+            path: /healthz
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: jenkins-operator
+        readinessProbe:
+          failureThreshold: 10
+          httpGet:
+            path: /readyz
+            port: 8081
+            scheme: HTTP
+          initialDelaySeconds: 180
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 100m
+            memory: 30Mi
+          requests:
+            cpu: 100m
+            memory: 20Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        runAsUser: 65532
+      serviceAccount: jenkins-operator
+      serviceAccountName: jenkins-operator
+      terminationGracePeriodSeconds: 10
+status:
+  availableReplicas: 1
+  fullyLabeledReplicas: 1
+  observedGeneration: 1
+  readyReplicas: 1
+  replicas: 1

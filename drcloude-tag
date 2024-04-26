@@ -1,0 +1,33 @@
+pipeline {
+  environment {
+        git_tag="${env.JOB_NAME}-${env.BUILD_NUMBER}"
+        GIT_AUTH = credentials('bb_prabhu')
+  }
+  agent any
+    stages {
+    stage('checkout') {
+      steps {
+      // add Jenkins build name setter
+            buildName "${BRANCH_NAME}-${ENV_NAME}-${BUILD_NUMBER}-bld"
+        checkout([$class: 'GitSCM', branches: [[name: '*/$BRANCH_NAME']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'bb_prabhu', url: 'https://kaspr001@bitbucket.org/kaspr001/riq-test.git']]])
+      }
+    }
+    stage('compile') {
+    steps {
+        //sh './gradlew build -Pprofile=$NAMESPACE'
+        echo 'Comiple code '
+      }
+    }
+
+    stage('git tagging') {
+        steps {
+            sh '''
+                git config --local credential.helper "!f() { echo username=\\$GIT_AUTH_USR; echo password=\\$GIT_AUTH_PSW; }; f"
+                git tag $git_tag
+                git push origin $git_tag
+            '''
+        }
+    }
+    
+  }
+}

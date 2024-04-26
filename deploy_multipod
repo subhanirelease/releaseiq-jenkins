@@ -1,0 +1,108 @@
+pipeline {
+  environment {
+    EMAIL_TO = 'devops-team@releaseiq.io,platform-team@releaseiq.io'  
+    module="analytics"
+    podname="analytics"
+  }
+  agent {
+    kubernetes {
+      //Cloud Kubernetes
+      yaml """
+      kind: Pod
+      metadata:
+        name: helm
+      spec:
+        containers:
+        - name: helm
+          image: docker.io/alpine/helm:3.1.2
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        - name: kubectl
+          image: docker.io/roffe/kubectl:latest
+          imagePullPolicy: IfNotPresent
+          command:
+          -  cat
+          tty: true
+        volumes:
+          - name: docker-config
+            configMap:
+              name: docker-config
+      """
+    }
+  }
+  stages {
+    stage('deploy') {
+      steps {
+      buildName "${BRANCH_NAME}-${ENV_NAME}-${BUILD}-dply"
+        container(name: 'helm') {
+          echo 'Deploying riq-insights Service'
+          checkout([$class: 'GitSCM', branches: [[name: '*/$BRANCH_NAME']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[credentialsId: 'github', url: 'https://github.com/riqio/riq-analytics.git']]])
+          sh '''
+              cd $WORKSPACE/deployment/helm/$module
+              ls -l
+              sed -i "s/version: 0.1.0/version: 0.1.$BUILD/g" Chart.yaml
+              cat Chart.yaml
+              helm version
+              helm upgrade --install --namespace $NAMESPACE --values $NAMESPACE.yaml --debug --force --set image.tag=$BUILD riq-analytics .
+          '''        
+        }
+      }
+    }
+    
+     stage('Deployment verification') {
+      steps {
+        container(name: 'kubectl') {
+          echo 'Checking deployment status ....'
+          sh '''
+          set +x
+          echo Verifying post deployment POD status.
+          max=300
+          i=0
+          while [ "$i" -le "$max" ]
+          do
+            podcount=$(kubectl get pods -n $NAMESPACE | grep $podname | awk '{print $3}' | wc | awk '{print $1}')
+            status=$(kubectl get pods -n $NAMESPACE | grep $podname | grep Running | awk '{print $3}' | wc | awk '{print $1}')
+            if [ "$podcount" -eq "3" ] && [ "$status" -eq "3" ]
+            then
+                echo Post deployment POD count is $podcount Running status is $status.
+                kubectl get pods -n $NAMESPACE | awk 'NR==1 {print}'
+                kubectl get pods -n $NAMESPACE | grep $podname
+                echo DEPLOY SUCCESS!
+                exit 0
+            else
+                sleep 5
+                i=$(( i + 5 ))
+                echo Post deployment POD status is $status
+                #kubectl get pods -n $NAMESPACE | awk 'NR==1 {print}'
+                #kubectl get pods -n $NAMESPACE | grep $podname
+            fi
+          done
+          echo WAITED ALLOTED TIME 300 seconds
+          echo LAST POD STATUS $status
+          kubectl get pods -n $NAMESPACE
+          pod=$(kubectl get pods -n $NAMESPACE | grep $podname |awk '{print $1}')
+          kubectl describe pod $pod -n $NAMESPACE
+          echo =========================================
+          kubectl logs $pod -n $NAMESPACE
+          echo ==========================================
+          echo NEED USER ATTENTION SENDING FAILURE MESSAGE
+          exit 1
+            '''
+        }
+      }
+    }
+    
+  }
+   post {  
+     success {  
+       echo "${env.JOB_NAME} Deploy successful. Sending email"
+       mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD_NUMBER} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: 'devops', mimeType: 'text/html', replyTo: '', subject: "Build Success: Project name -> ${env.JOB_NAME} in ${env.ENV_NAME}", to: "${EMAIL_TO}";  
+     }  
+     failure {
+       echo "${env.JOB_NAME} Deploy failed. Sending email"
+       mail bcc: '', body: "<br>Project: ${env.JOB_NAME} <br>Build Number: ${env.BUILD_NUMBER} <br> Build URL: ${env.BUILD_URL}console", cc: '', charset: 'UTF-8', from: '', mimeType: 'text/html', replyTo: '', subject: "Build Failed: Project name -> ${env.JOB_NAME} in ${env.ENV_NAME}", to: "${EMAIL_TO}";  
+     }  
+   } 
+}

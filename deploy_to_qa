@@ -1,0 +1,37 @@
+
+pipeline {
+  environment {
+        git_tag="${env.JOB_NAME}-${env.BUILD_NUMBER}"
+  }
+  agent any
+    stages {
+    stage('checkout') {
+      steps {
+      // add Jenkins build name setter
+            buildName "DeploytoQA"
+        sshagent(credentials : ['qa-03']) {
+        sh '''ssh -t drcloudadmin@10.1.2.27 -p 59372 -o StrictHostKeyChecking=no "
+        pwd;
+        cd /data1/wwwroot/html/dc_ehr_php7_qa_riq;
+        export TERM=xterm
+        git config --local credential.helper '"'!f() { echo username=\\$USER_NAME; echo password=\\$PASS_WORD; }; f'"'
+        git config --global user.email "suryaa@drcloudemr.com"
+        git config --global user.name "$USER_NAME"
+        git branch;
+        git checkout $BRANCH_NAME;
+        git pull;
+        git branch;
+        
+        echo '-------------------'
+        echo 'Execute SQL Queries'
+        echo '-------------------'
+        ls -l /home/drcloudadmin/runUpgradeScriptsQA.sh
+        /home/drcloudadmin/runUpgradeScriptsQA.sh
+        "
+        '''
+        }
+      }
+    }
+    
+  }
+}
